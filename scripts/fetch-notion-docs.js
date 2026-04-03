@@ -1,6 +1,7 @@
 const { Client } = require('@notionhq/client');
 const fs = require('fs');
 const path = require('path');
+const chalk = require('chalk');
 
 const notion = new Client({ auth: process.env.NOTION_API_KEY });
 const DOCS_DIR = process.env.REPO_ROOT
@@ -14,8 +15,8 @@ const SKIP_PAGE_IDS = new Set(
   (process.env.SKIP_PAGE_IDS?.split(',') || []).map((id) => id.replace(/-/g, ''))
 );
 
-if (SKIP_PAGE_IDS.size) console.log(`Will skip page IDs: ${[...SKIP_PAGE_IDS].join(', ')}`);
-else console.warn('⚠ SKIP_PAGE_IDS is empty — all pages will be fetched');
+if (SKIP_PAGE_IDS.size) console.log(chalk.dim(`  Skipping page IDs: ${[...SKIP_PAGE_IDS].join(', ')}`));
+else console.warn(chalk.yellow('  ⚠ SKIP_PAGE_IDS is empty — all pages will be fetched'));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -179,6 +180,7 @@ async function fetchPageContent(pageId) {
 // ---------------------------------------------------------------------------
 
 async function main() {
+  const startTime = Date.now();
   const rootId = process.env.NOTION_TECHNICAL_ROOT_ID;
   if (!rootId) throw new Error('NOTION_TECHNICAL_ROOT_ID is required');
 
@@ -186,16 +188,17 @@ async function main() {
   if (fs.existsSync(DOCS_DIR)) fs.rmSync(DOCS_DIR, { recursive: true });
   fs.mkdirSync(DOCS_DIR, { recursive: true });
 
-  console.log('Fetching Notion page tree…');
+  console.log(chalk.cyan('  Fetching Notion page tree…'));
   const pages = await fetchPageTree(rootId);
-  console.log(`Found ${pages.length} pages`);
+  console.log(`  Found ${chalk.bold(pages.length)} pages`);
 
   const manifest = [];
+  let totalSize = 0;
 
   for (const page of pages) {
     try {
-      console.log(`  Fetching: ${page.path}`);
       const content = await fetchPageContent(page.id);
+      totalSize += content.length;
 
       // Build file path from segments: _docs/Client/Overview.md
       const dirSegments = page.segments.slice(0, -1); // parent folders
@@ -212,19 +215,21 @@ async function main() {
         path: page.path,
         file: path.relative(path.resolve(__dirname, '../..'), filePath),
       });
+      console.log(`    ${chalk.green('✓')} ${chalk.cyan(page.title)} ${chalk.dim(`(${Math.round(content.length / 1024)}KB)`)}`);
     } catch (err) {
-      console.warn(`  ⚠ Failed to fetch "${page.title}": ${err.message}`);
+      console.warn(`    ${chalk.red('✗')} ${page.title} — ${chalk.red(err.message)}`);
     }
   }
 
   // Write manifest
   const manifestPath = path.join(DOCS_DIR, '_index.json');
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-  console.log(`\nWrote ${manifest.length} pages to ${DOCS_DIR}/`);
-  console.log(`Manifest: ${manifestPath}`);
+
+  const elapsed = Math.round((Date.now() - startTime) / 1000);
+  console.log(`\n  Wrote ${chalk.bold(manifest.length)} pages ${chalk.dim(`(${Math.round(totalSize / 1024)}KB total, ${elapsed}s)`)}`);
 }
 
 main().catch((err) => {
-  console.error('Fetch failed:', err.message);
+  console.error(chalk.red.bold('  Fetch failed:'), err.message);
   process.exit(1);
 });

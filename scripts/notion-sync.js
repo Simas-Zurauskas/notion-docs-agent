@@ -2,6 +2,7 @@ const fs = require('fs');
 const Anthropic = require('@anthropic-ai/sdk');
 const { Client } = require('@notionhq/client');
 const { markdownToBlocks } = require('@tryfabric/martian');
+const chalk = require('chalk');
 const DOC_STANDARDS = require('./doc-standards');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -17,6 +18,13 @@ function sanitizeMarkdownLinks(markdown) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const REPO_LABEL = process.env.REPO_LABEL;
+
+// ---------------------------------------------------------------------------
+// Log helpers
+// ---------------------------------------------------------------------------
+
+const label = (key, val) => `  ${chalk.bold(key)} ${val}`;
+const separator = () => chalk.dim('─'.repeat(60));
 
 // ---------------------------------------------------------------------------
 // Notion helpers
@@ -203,26 +211,29 @@ async function main() {
   const changedFiles = (process.env.CHANGED_FILES || '').split('\n').filter(Boolean);
   const diff = fs.readFileSync('/tmp/pr_diff.txt', 'utf8');
   console.log('');
-  console.log(`Repository: ${process.env.REPO_NAME} (${REPO_LABEL})`);
-  console.log(`Trigger:    ${prRef()}: ${process.env.PR_TITLE}`);
-  console.log(`Author:     ${process.env.PR_AUTHOR}`);
-  console.log(`Changed:    ${changedFiles.length} files, ${Math.round(diff.length / 1024)}KB diff`);
+  console.log(chalk.bold.cyan('KNOWLEDGE BASE SYNC'));
+  console.log(separator());
+  console.log(label('Repository:', `${process.env.REPO_NAME} ${chalk.dim(`(${REPO_LABEL})`)}`));
+  console.log(label('Trigger:   ', `${prRef()}: ${process.env.PR_TITLE}`));
+  console.log(label('Author:    ', process.env.PR_AUTHOR));
+  console.log(label('Changed:   ', `${changedFiles.length} files, ${Math.round(diff.length / 1024)}KB diff`));
   if (changedFiles.length <= 15) {
-    for (const f of changedFiles) console.log(`  · ${f}`);
+    for (const f of changedFiles) console.log(chalk.dim(`    ${f}`));
   } else {
-    for (const f of changedFiles.slice(0, 10)) console.log(`  · ${f}`);
-    console.log(`  … and ${changedFiles.length - 10} more`);
+    for (const f of changedFiles.slice(0, 10)) console.log(chalk.dim(`    ${f}`));
+    console.log(chalk.dim(`    … and ${changedFiles.length - 10} more`));
   }
   console.log('');
 
-  console.log('Fetching Notion page tree…');
+  console.log(chalk.cyan('Fetching Notion page tree…'));
   const existingPages = await fetchPageTree(rootId);
-  console.log(`Found ${existingPages.length} pages:`);
+  console.log(`  Found ${chalk.bold(existingPages.length)} pages:`);
   for (const p of existingPages) {
-    console.log(`  · ${p.path}`);
+    console.log(`    ${chalk.cyan(p.title)} ${chalk.dim(p.path !== p.title ? `(${p.path})` : '')}`);
   }
 
-  console.log('\nFetching page summaries…');
+  console.log('');
+  console.log(chalk.cyan('Fetching page summaries…'));
   let summaryFailed = 0;
   let summaryChars = 0;
   for (const page of existingPages) {
@@ -237,11 +248,12 @@ async function main() {
       summaryChars += page.summary.length;
     } catch (err) {
       summaryFailed++;
-      console.warn(`  ⚠ Failed to fetch summary for "${page.title}": ${err.message}`);
+      console.warn(chalk.yellow(`  ⚠ Failed to fetch summary for "${page.title}": ${err.message}`));
       page.summary = '(summary unavailable)';
     }
   }
-  console.log(`Summaries fetched: ${existingPages.length - summaryFailed} OK, ${summaryFailed} failed (${Math.round(summaryChars / 1024)}KB total)`);
+  const summaryOk = existingPages.length - summaryFailed;
+  console.log(`  ${chalk.green(`${summaryOk} OK`)}${summaryFailed ? `, ${chalk.yellow(`${summaryFailed} failed`)}` : ''} ${chalk.dim(`(${Math.round(summaryChars / 1024)}KB total)`)}`);
 
   const prompt = `You are a living documentation agent for this project.
 You are operating in the **${REPO_LABEL}** repository.
@@ -333,10 +345,9 @@ Respond ONLY in valid JSON (no markdown fences):
   ]
 }`;
 
-  console.log(
-    `Prompt: ${Math.round(prompt.length / 1024)}KB, ${existingPages.length} pages, diff ${Math.round(diff.length / 1024)}KB`,
-  );
-  console.log('Asking Claude to assess documentation impact…');
+  console.log('');
+  console.log(chalk.cyan('Asking Claude to assess documentation impact…'));
+  console.log(chalk.dim(`  Prompt: ${Math.round(prompt.length / 1024)}KB, ${existingPages.length} pages, diff ${Math.round(diff.length / 1024)}KB`));
   const aiStart = Date.now();
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
@@ -346,22 +357,22 @@ Respond ONLY in valid JSON (no markdown fences):
 
   const { usage } = response;
   const aiElapsed = Math.round((Date.now() - aiStart) / 1000);
-  console.log(`Claude responded in ${aiElapsed}s — ${usage.input_tokens} in, ${usage.output_tokens} out`);
+  console.log(`  Responded in ${chalk.bold(`${aiElapsed}s`)} ${chalk.dim(`— ${usage.input_tokens} in, ${usage.output_tokens} out`)}`);
 
   let result;
   try {
     const raw = response.content[0].text.replace(/```json|```/g, '').trim();
     result = JSON.parse(raw);
   } catch (err) {
-    console.error('Failed to parse Claude response:', response.content[0].text.slice(0, 500));
+    console.error(chalk.red('Failed to parse Claude response:'), response.content[0].text.slice(0, 500));
     throw new Error(`JSON parse error: ${err.message}`);
   }
 
-  console.log(`Meaningful: ${result.meaningful}`);
-  console.log(`Reasoning: ${result.reasoning}`);
+  console.log(`  Meaningful: ${result.meaningful ? chalk.green('yes') : chalk.yellow('no')}`);
+  console.log(`  Reasoning:  ${chalk.italic(result.reasoning)}`);
 
   if (!result.meaningful || !result.actions?.length) {
-    console.log('No documentation updates needed.');
+    console.log(chalk.dim('\nNo documentation updates needed.'));
     return;
   }
 
@@ -369,7 +380,8 @@ Respond ONLY in valid JSON (no markdown fences):
   const validIds = new Set(existingPages.map((p) => p.id));
   validIds.add(rootId);
 
-  console.log(`Executing ${result.actions.length} action(s)…`);
+  console.log('');
+  console.log(chalk.cyan(`Executing ${result.actions.length} action(s)…`));
 
   const log = [];
 
@@ -379,8 +391,8 @@ Respond ONLY in valid JSON (no markdown fences):
     // Validate page_id / parent_id exists in the tree
     const targetId = action.page_id || action.parent_id;
     if (targetId && !validIds.has(targetId)) {
-      console.warn(`  ⚠ Skipping ${action.type} on "${label}": page_id ${targetId} not found in Notion tree`);
-      log.push({ status: '⚠', type: action.type, page: label, id: targetId, detail: 'Invalid page_id — not in tree' });
+      console.warn(chalk.yellow(`  ⚠ Skipping ${action.type} on "${label}": page_id ${targetId} not found in Notion tree`));
+      log.push({ status: 'warn', type: action.type, page: label, id: targetId, detail: 'Invalid page_id — not in tree' });
       continue;
     }
 
@@ -389,7 +401,7 @@ Respond ONLY in valid JSON (no markdown fences):
         case 'rewrite':
           await rewritePage(action.page_id, action.content);
           log.push({
-            status: '✓',
+            status: 'ok',
             type: action.type,
             page: label,
             id: action.page_id,
@@ -398,13 +410,13 @@ Respond ONLY in valid JSON (no markdown fences):
           break;
         case 'create': {
           const newId = await createPage(action.parent_id, action.title, action.content, action.links_to || []);
-          log.push({ status: '✓', type: action.type, page: label, id: newId, detail: `parent: ${action.parent_id}` });
+          log.push({ status: 'ok', type: action.type, page: label, id: newId, detail: `parent: ${action.parent_id}` });
           break;
         }
         case 'crosslink':
           await crosslinkPage(action.page_id, action.note);
           log.push({
-            status: '✓',
+            status: 'ok',
             type: action.type,
             page: label,
             id: action.page_id,
@@ -412,43 +424,51 @@ Respond ONLY in valid JSON (no markdown fences):
           });
           break;
         default:
-          log.push({ status: '?', type: action.type, page: label, id: '—', detail: 'Unknown action type' });
+          log.push({ status: 'warn', type: action.type, page: label, id: '—', detail: 'Unknown action type' });
           continue;
       }
+      console.log(`  ${chalk.green('✓')} ${chalk.bold(action.type)} "${label}"`);
     } catch (err) {
       log.push({
-        status: '✗',
+        status: 'error',
         type: action.type,
         page: label,
         id: action.page_id || action.parent_id,
         detail: err.message,
       });
+      console.log(`  ${chalk.red('✗')} ${chalk.bold(action.type)} "${label}" — ${chalk.red(err.message)}`);
     }
   }
 
   // Summary
   const elapsed = Math.round((Date.now() - startTime) / 1000);
-  const succeeded = log.filter((e) => e.status === '✓').length;
-  const failed = log.filter((e) => e.status === '✗').length;
-  const skipped = log.filter((e) => e.status === '⚠' || e.status === '?').length;
+  const succeeded = log.filter((e) => e.status === 'ok').length;
+  const failed = log.filter((e) => e.status === 'error').length;
+  const skipped = log.filter((e) => e.status === 'warn').length;
 
-  console.log('\n' + '='.repeat(60));
-  console.log('SYNC SUMMARY');
-  console.log('='.repeat(60));
-  console.log(`Change:    ${prRef()}: ${process.env.PR_TITLE}`);
-  console.log(`Reasoning: ${result.reasoning}`);
-  console.log(`Actions:   ${succeeded} succeeded, ${failed} failed, ${skipped} skipped`);
-  console.log(`Tokens:    ${usage.input_tokens} in, ${usage.output_tokens} out`);
-  console.log(`Duration:  ${elapsed}s (AI: ${aiElapsed}s)`);
+  console.log('');
+  console.log(separator());
+  console.log(chalk.bold('SYNC SUMMARY'));
+  console.log(separator());
+  console.log(label('Change:   ', `${prRef()}: ${process.env.PR_TITLE}`));
+  console.log(label('Reasoning:', chalk.italic(result.reasoning)));
+  console.log(label('Actions:  ', [
+    succeeded && chalk.green(`${succeeded} succeeded`),
+    failed && chalk.red(`${failed} failed`),
+    skipped && chalk.yellow(`${skipped} skipped`),
+  ].filter(Boolean).join(', ')));
+  console.log(label('Tokens:   ', chalk.dim(`${usage.input_tokens} in, ${usage.output_tokens} out`)));
+  console.log(label('Duration: ', `${elapsed}s ${chalk.dim(`(AI: ${aiElapsed}s)`)}`));
   console.log('');
   for (const entry of log) {
-    console.log(`  ${entry.status} ${entry.type.padEnd(10)} "${entry.page}" [${entry.id}]`);
-    console.log(`    ${entry.detail}`);
+    const icon = entry.status === 'ok' ? chalk.green('✓') : entry.status === 'error' ? chalk.red('✗') : chalk.yellow('⚠');
+    console.log(`  ${icon} ${chalk.bold(entry.type.padEnd(10))} "${entry.page}" ${chalk.dim(`[${entry.id}]`)}`);
+    console.log(`    ${chalk.dim(entry.detail)}`);
   }
-  console.log('='.repeat(60));
+  console.log(separator());
 }
 
 main().catch((err) => {
-  console.error('Sync failed:', err.message);
+  console.error(chalk.red.bold('Sync failed:'), err.message);
   process.exit(1);
 });

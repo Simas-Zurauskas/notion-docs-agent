@@ -16,6 +16,7 @@
 const fs = require('fs');
 const { Client } = require('@notionhq/client');
 const { markdownToBlocks } = require('@tryfabric/martian');
+const chalk = require('chalk');
 
 const notion = new Client({ auth: process.env.NOTION_API_KEY });
 
@@ -98,14 +99,14 @@ async function rewritePage(pageId, markdownFile) {
   } while (cursor);
 
   await appendBlocks(pageId, blocks);
-  console.log(`✓ Rewrote page ${pageId} (${blocks.length} blocks)`);
+  console.log(`${chalk.green('✓')} Rewrote page ${chalk.dim(pageId)} ${chalk.dim(`(${blocks.length} blocks)`)}`);
 }
 
 async function appendToPage(pageId, markdownFile) {
   const markdown = sanitizeMarkdownLinks(fs.readFileSync(markdownFile, 'utf8'));
   const blocks = markdownToBlocks(markdown);
   await appendBlocks(pageId, blocks);
-  console.log(`✓ Appended to page ${pageId} (${blocks.length} blocks)`);
+  console.log(`${chalk.green('✓')} Appended to page ${chalk.dim(pageId)} ${chalk.dim(`(${blocks.length} blocks)`)}`);
 }
 
 async function createPage(parentId, title, markdownFile) {
@@ -127,7 +128,7 @@ async function createPage(parentId, title, markdownFile) {
     await appendBlocks(page.id, blocks.slice(100));
   }
 
-  console.log(`✓ Created page "${title}" [${page.id}] under ${parentId} (${blocks.length} blocks)`);
+  console.log(`${chalk.green('✓')} Created page "${chalk.cyan(title)}" [${page.id}] ${chalk.dim(`under ${parentId} (${blocks.length} blocks)`)}`);
 }
 
 async function deletePage(pageId) {
@@ -135,7 +136,7 @@ async function deletePage(pageId) {
     page_id: pageId,
     archived: true,
   });
-  console.log(`✓ Archived page ${pageId}`);
+  console.log(`${chalk.green('✓')} Archived page ${chalk.dim(pageId)}`);
 }
 
 async function renamePage(pageId, newTitle) {
@@ -145,7 +146,7 @@ async function renamePage(pageId, newTitle) {
       title: { title: [{ type: 'text', text: { content: newTitle } }] },
     },
   });
-  console.log(`✓ Renamed page ${pageId} to "${newTitle}"`);
+  console.log(`${chalk.green('✓')} Renamed page ${chalk.dim(pageId)} to "${chalk.cyan(newTitle)}"`);
 }
 
 // ---------------------------------------------------------------------------
@@ -186,13 +187,13 @@ async function main() {
       break;
 
     default:
-      console.error(`Unknown command: ${command}`);
-      console.error('Commands: list, rewrite, append, create, delete, rename');
+      console.error(chalk.red(`Unknown command: ${command}`));
+      console.error(chalk.dim('Commands: list, rewrite, append, create, delete, rename'));
       process.exit(1);
   }
 }
 
 main().catch((err) => {
-  console.error(`✗ ${err.message}`);
+  console.error(`${chalk.red('✗')} ${err.message}`);
   process.exit(1);
 });

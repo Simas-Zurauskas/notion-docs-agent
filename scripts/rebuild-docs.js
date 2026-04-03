@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const { query } = require('@anthropic-ai/claude-agent-sdk');
+const chalk = require('chalk');
 const DOC_STANDARDS = require('./doc-standards');
 
 const SCRIPTS_DIR = __dirname;
@@ -26,6 +27,14 @@ const NOTION_TOOL = path.join(SCRIPTS_DIR, 'notion-tool.js');
 const CONCURRENCY = 5;
 const WORKER_MAX_TURNS = 30;
 const MODEL = 'claude-sonnet-4-6';
+
+// ---------------------------------------------------------------------------
+// Log helpers
+// ---------------------------------------------------------------------------
+
+const label = (key, val) => `  ${chalk.bold(key)} ${val}`;
+const separator = () => chalk.dim('─'.repeat(60));
+const phaseHeader = (name) => chalk.bold.cyan(`\n${name}`);
 
 // ---------------------------------------------------------------------------
 // Phase A: Prepare
@@ -90,11 +99,11 @@ function buildDocsBundle() {
 
 async function prepare() {
   const phaseStart = Date.now();
-  console.log('Phase A: Prepare');
-  console.log(`  Repo root: ${REPO_ROOT}`);
+  console.log(phaseHeader('Phase A: Prepare'));
+  console.log(label('Repo root:', chalk.dim(REPO_ROOT)));
 
   // 1. Fetch Notion docs
-  console.log('  Fetching Notion documentation...');
+  console.log(chalk.cyan('\n  Fetching Notion documentation…'));
   execSync(`node ${path.join(SCRIPTS_DIR, 'fetch-notion-docs.js')}`, {
     cwd: REPO_ROOT,
     env: process.env,
@@ -102,27 +111,28 @@ async function prepare() {
   });
 
   // 2. Generate manifest
-  console.log('  Generating codebase manifest...');
+  console.log(chalk.cyan('\n  Generating codebase manifest…'));
   const manifest = generateManifest();
   const fileCount = (manifest.match(/\.tsx?$/gm) || []).length;
-  console.log(`  Manifest: ${manifest.split('\n').length} lines, ${fileCount} source files`);
+  console.log(`  ${chalk.bold(fileCount)} source files, ${manifest.split('\n').length} manifest lines`);
 
   // 3. Read docs index
   let docsIndex = [];
   if (fs.existsSync(DOCS_INDEX_PATH)) {
     docsIndex = JSON.parse(fs.readFileSync(DOCS_INDEX_PATH, 'utf8'));
   }
-  console.log(`  Docs index: ${docsIndex.length} pages`);
+  console.log(`\n  Docs index: ${chalk.bold(docsIndex.length)} pages`);
   for (const doc of docsIndex) {
-    console.log(`    · ${doc.path} [${doc.id}]`);
+    console.log(`    ${chalk.cyan(doc.title || doc.path)} ${chalk.dim(`[${doc.id}]`)}`);
   }
 
   // 4. Build docs bundle
-  console.log('  Bundling documentation...');
+  console.log(chalk.cyan('\n  Bundling documentation…'));
   const docsBundle = buildDocsBundle();
-  console.log(`  Docs bundle: ${Math.round(docsBundle.length / 1024)}KB`);
+  console.log(`  Bundle: ${chalk.bold(`${Math.round(docsBundle.length / 1024)}KB`)}`);
 
-  console.log(`  Phase A completed in ${Math.round((Date.now() - phaseStart) / 1000)}s`);
+  const phaseElapsed = Math.round((Date.now() - phaseStart) / 1000);
+  console.log(chalk.dim(`\n  Phase A completed in ${phaseElapsed}s`));
   return { manifest, docsBundle, docsIndex };
 }
 
@@ -228,11 +238,11 @@ Omit tasks for pages that are already accurate — only include work that needs 
 
 async function orchestrate(manifest, docsBundle, docsIndex) {
   const phaseStart = Date.now();
-  console.log('\nPhase B: Plan');
-  console.log('  Running orchestrator agent...');
+  console.log(phaseHeader('Phase B: Plan'));
+  console.log(chalk.cyan('  Running orchestrator agent…'));
 
   const prompt = buildOrchestratorPrompt(manifest, docsBundle, docsIndex);
-  console.log(`  Orchestrator prompt: ${Math.round(prompt.length / 1024)}KB`);
+  console.log(chalk.dim(`  Prompt: ${Math.round(prompt.length / 1024)}KB`));
 
   const conversation = query({
     prompt,
@@ -255,18 +265,24 @@ async function orchestrate(manifest, docsBundle, docsIndex) {
   }
 
   if (!plan || !plan.tasks?.length) {
-    console.log('  Orchestrator produced no tasks — documentation is up to date.');
+    console.log(chalk.dim('  Orchestrator produced no tasks — documentation is up to date.'));
     return { state: 'maintenance', reasoning: 'No changes needed', tasks: [] };
   }
 
-  console.log(`  State: ${plan.state}`);
-  console.log(`  Reasoning: ${plan.reasoning}`);
-  console.log(`  Tasks: ${plan.tasks.length}`);
+  const stateColors = { bootstrap: chalk.magenta, growth: chalk.yellow, maintenance: chalk.green };
+  const stateColor = stateColors[plan.state] || chalk.white;
+  console.log(label('State:    ', stateColor(plan.state)));
+  console.log(label('Reasoning:', chalk.italic(plan.reasoning)));
+  console.log(label('Tasks:    ', chalk.bold(plan.tasks.length)));
+  console.log('');
   for (const t of plan.tasks) {
-    console.log(`    [P${t.priority}] ${t.action.padEnd(8)} ${t.section}${t.page_id ? ` [${t.page_id}]` : ''}`);
-    console.log(`         ${t.instructions.slice(0, 120)}${t.instructions.length > 120 ? '…' : ''}`);
+    const priorityColor = t.priority === 1 ? chalk.red : t.priority === 2 ? chalk.yellow : chalk.dim;
+    console.log(`    ${priorityColor(`P${t.priority}`)} ${chalk.bold(t.action.padEnd(8))} ${chalk.cyan(t.section)}${t.page_id ? chalk.dim(` [${t.page_id}]`) : ''}`);
+    console.log(chalk.dim(`       ${t.instructions.slice(0, 120)}${t.instructions.length > 120 ? '…' : ''}`));
   }
-  console.log(`  Phase B completed in ${Math.round((Date.now() - phaseStart) / 1000)}s`);
+
+  const phaseElapsed = Math.round((Date.now() - phaseStart) / 1000);
+  console.log(chalk.dim(`\n  Phase B completed in ${phaseElapsed}s`));
 
   return plan;
 }
@@ -406,20 +422,17 @@ async function runTaskBatch(tasks, manifest) {
   const results = [];
   for (let i = 0; i < tasks.length; i += CONCURRENCY) {
     const batch = tasks.slice(i, i + CONCURRENCY);
-    console.log(`  Running workers ${i + 1}-${i + batch.length} of ${tasks.length}...`);
+    console.log(chalk.cyan(`\n  Batch ${Math.floor(i / CONCURRENCY) + 1}: workers ${i + 1}–${i + batch.length} of ${tasks.length}`));
+    const batchStart = Date.now();
     const batchResults = await Promise.all(batch.map((t) => runWorkerAgent(t, manifest)));
+    const batchElapsed = Math.round((Date.now() - batchStart) / 1000);
     for (const r of batchResults) {
-      const status = r.skipped ? `skipped (${r.skip_reason})` : `${r.action} — ${r.summary}`;
+      const icon = r.skipped ? chalk.yellow('○') : chalk.green('✓');
+      const status = r.skipped ? chalk.yellow(`skipped (${r.skip_reason})`) : `${r.action} — ${r.summary}`;
       const mdLen = r.markdown ? `${Math.round(r.markdown.length / 1024)}KB` : '0KB';
-      const ids = [
-        r.page_id && `page:${r.page_id}`,
-        r.parent_id && `parent:${r.parent_id}`,
-        r.title && `title:"${r.title}"`,
-      ]
-        .filter(Boolean)
-        .join(', ');
-      console.log(`    ${r.skipped ? '○' : '✓'} ${r.task_id}: ${status} [${mdLen}]${ids ? ` (${ids})` : ''}`);
+      console.log(`    ${icon} ${chalk.bold(r.task_id)}: ${status} ${chalk.dim(`[${mdLen}]`)}`);
     }
+    console.log(chalk.dim(`    Batch completed in ${batchElapsed}s`));
     results.push(...batchResults);
   }
   return results;
@@ -474,13 +487,13 @@ function writeToNotion(results) {
   for (const result of results) {
     if (result.skipped) {
       writeLog.push({ task_id: result.task_id, status: 'skipped', reason: result.skip_reason });
-      console.log(`    ○ ${result.task_id}: skipped — ${result.skip_reason}`);
+      console.log(`    ${chalk.yellow('○')} ${result.task_id}: ${chalk.yellow(`skipped — ${result.skip_reason}`)}`);
       continue;
     }
 
     if (!result.markdown || result.markdown.trim().length === 0) {
       writeLog.push({ task_id: result.task_id, status: 'skipped', reason: 'Empty markdown' });
-      console.log(`    ○ ${result.task_id}: skipped — empty markdown`);
+      console.log(`    ${chalk.yellow('○')} ${result.task_id}: ${chalk.yellow('skipped — empty markdown')}`);
       continue;
     }
 
@@ -511,7 +524,7 @@ function writeToNotion(results) {
               status: 'error',
               error: `Missing title ("${result.title}") or parent_id ("${result.parent_id}")`,
             });
-            console.log(`    ✗ ${result.task_id}: create — missing title or parent_id`);
+            console.log(`    ${chalk.red('✗')} ${result.task_id}: ${chalk.red('create — missing title or parent_id')}`);
             continue;
           }
           const title = result.title.replace(/"/g, '\\"');
@@ -530,7 +543,7 @@ function writeToNotion(results) {
         case 'rename': {
           if (!result.title || !result.page_id) {
             writeLog.push({ task_id: result.task_id, status: 'error', error: `Missing title or page_id` });
-            console.log(`    ✗ ${result.task_id}: rename — missing title or page_id`);
+            console.log(`    ${chalk.red('✗')} ${result.task_id}: ${chalk.red('rename — missing title or page_id')}`);
             continue;
           }
           const newTitle = result.title.replace(/"/g, '\\"');
@@ -544,10 +557,10 @@ function writeToNotion(results) {
           continue;
       }
 
-      console.log(`    ✓ ${result.task_id}: ${result.action} — ${result.summary}`);
+      console.log(`    ${chalk.green('✓')} ${chalk.bold(result.task_id)}: ${result.action} — ${result.summary}`);
     } catch (err) {
       writeLog.push({ task_id: result.task_id, status: 'error', error: err.message });
-      console.log(`    ✗ ${result.task_id}: ${result.action} — ${err.message}`);
+      console.log(`    ${chalk.red('✗')} ${chalk.bold(result.task_id)}: ${result.action} — ${chalk.red(err.message)}`);
     }
   }
 
@@ -563,22 +576,30 @@ function printSummary(plan, allWriteResults, elapsed) {
   const skipped = allWriteResults.filter((r) => r.status === 'skipped').length;
   const failed = allWriteResults.filter((r) => r.status === 'error').length;
 
-  console.log('\n' + '='.repeat(60));
-  console.log('REBUILD SUMMARY');
-  console.log('='.repeat(60));
-  console.log(`State:     ${plan.state}`);
-  console.log(`Reasoning: ${plan.reasoning}`);
-  console.log(`Tasks:     ${plan.tasks.length} planned`);
-  console.log(`Results:   ${succeeded} succeeded, ${skipped} skipped, ${failed} failed`);
-  console.log(`Duration:  ${elapsed}s`);
+  console.log('');
+  console.log(separator());
+  console.log(chalk.bold('REBUILD SUMMARY'));
+  console.log(separator());
+
+  const stateColors = { bootstrap: chalk.magenta, growth: chalk.yellow, maintenance: chalk.green };
+  const stateColor = stateColors[plan.state] || chalk.white;
+  console.log(label('State:    ', stateColor(plan.state)));
+  console.log(label('Reasoning:', chalk.italic(plan.reasoning)));
+  console.log(label('Tasks:    ', `${plan.tasks.length} planned`));
+  console.log(label('Results:  ', [
+    succeeded && chalk.green(`${succeeded} succeeded`),
+    skipped && chalk.yellow(`${skipped} skipped`),
+    failed && chalk.red(`${failed} failed`),
+  ].filter(Boolean).join(', ')));
+  console.log(label('Duration: ', `${elapsed}s`));
   if (failed > 0) {
     console.log('');
-    console.log('Failures:');
+    console.log(chalk.red.bold('  Failures:'));
     for (const r of allWriteResults.filter((r) => r.status === 'error')) {
-      console.log(`  ✗ ${r.task_id}: ${r.error}`);
+      console.log(`    ${chalk.red('✗')} ${r.task_id}: ${chalk.red(r.error)}`);
     }
   }
-  console.log('='.repeat(60));
+  console.log(separator());
 }
 
 // ---------------------------------------------------------------------------
@@ -588,6 +609,10 @@ function printSummary(plan, allWriteResults, elapsed) {
 async function main() {
   const startTime = Date.now();
 
+  console.log('');
+  console.log(chalk.bold.cyan('KNOWLEDGE BASE REBUILD'));
+  console.log(separator());
+
   // Phase A
   const { manifest, docsBundle, docsIndex } = await prepare();
 
@@ -595,45 +620,45 @@ async function main() {
   const plan = await orchestrate(manifest, docsBundle, docsIndex);
 
   if (plan.tasks.length === 0) {
-    console.log('\nNo tasks to execute. Documentation is up to date.');
+    console.log(chalk.dim('\nNo tasks to execute. Documentation is up to date.'));
     return;
   }
 
   // Phase C
   const phaseCStart = Date.now();
-  console.log('\nPhase C: Execute');
+  console.log(phaseHeader('Phase C: Execute'));
   const { independent, dependent } = partitionTasks(plan.tasks);
 
-  console.log(`  Independent tasks: ${independent.length}`);
-  console.log(`  Dependent tasks: ${dependent.length}`);
+  console.log(label('Independent:', chalk.bold(independent.length)));
+  console.log(label('Dependent:  ', chalk.bold(dependent.length)));
 
   // Run independent workers
-  console.log('\n  --- Independent workers ---');
+  console.log(chalk.cyan('\n  --- Independent workers ---'));
   const independentResults = await runTaskBatch(independent, manifest);
 
   // Write independent results to Notion
-  console.log('\n  --- Writing independent results to Notion ---');
+  console.log(chalk.cyan('\n  --- Writing independent results to Notion ---'));
   const writeLog = writeToNotion(independentResults);
 
   // Run dependent workers (if any)
   let allWriteResults = [...writeLog];
   if (dependent.length > 0) {
-    console.log('\n  --- Dependent workers ---');
+    console.log(chalk.cyan('\n  --- Dependent workers ---'));
     const resolved = resolveDependencies(dependent, writeLog);
     const dependentResults = await runTaskBatch(resolved, manifest);
 
-    console.log('\n  --- Writing dependent results to Notion ---');
+    console.log(chalk.cyan('\n  --- Writing dependent results to Notion ---'));
     const depWriteLog = writeToNotion(dependentResults);
     allWriteResults.push(...depWriteLog);
   }
 
   const phaseCElapsed = Math.round((Date.now() - phaseCStart) / 1000);
   const elapsed = Math.round((Date.now() - startTime) / 1000);
-  console.log(`\n  Phase C completed in ${phaseCElapsed}s`);
+  console.log(chalk.dim(`\n  Phase C completed in ${phaseCElapsed}s`));
   printSummary(plan, allWriteResults, elapsed);
 }
 
 main().catch((err) => {
-  console.error(`Rebuild failed: ${err.message}`);
+  console.error(chalk.red.bold('Rebuild failed:'), err.message);
   process.exit(1);
 });
