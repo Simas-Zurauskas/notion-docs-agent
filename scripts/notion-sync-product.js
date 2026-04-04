@@ -12,6 +12,14 @@ const MODEL = 'claude-sonnet-4-6';
 const CONCURRENCY = 3;
 const REPO_LABEL = process.env.REPO_LABEL;
 
+function extractHeadings(markdown) {
+  return markdown
+    .split('\n')
+    .filter((line) => /^#{1,3}\s/.test(line))
+    .map((line) => line.trim())
+    .join('\n');
+}
+
 // ---------------------------------------------------------------------------
 // Log helpers
 // ---------------------------------------------------------------------------
@@ -74,7 +82,7 @@ CRITICAL: Documentation must contain ZERO code references. No file paths, no fun
 names, no API endpoints, no schema fields, no inline code backticks. Describe everything
 in plain language.
 
-The "How Strive Works" pages you can update (full current content of each page):
+The "How Strive Works" pages you can update (section headings per page — shows what topics are covered):
 ${docsBundle}
 
 Root page ID: ${rootId}
@@ -430,20 +438,21 @@ async function main() {
   }
   console.log(`  ${chalk.bold(docsIndex.length)} pages fetched`);
 
-  // Build docs bundle
-  let docsBundle = '';
+  // Build docs outline (headings only — for assessor)
+  let docsOutline = '';
   for (const doc of docsIndex) {
     const filePath = path.resolve(SCRIPTS_DIR, '../..', doc.file);
     if (fs.existsSync(filePath)) {
       const content = fs.readFileSync(filePath, 'utf8');
-      docsBundle += `\n---\n\n- "${doc.title}" (${doc.path}) [${doc.id}]\n\n${content}\n`;
+      const headings = extractHeadings(content);
+      docsOutline += `\n---\n\n"${doc.title}" (${doc.path}) [${doc.id}]\n${headings || '(no headings)'}\n`;
     }
   }
-  console.log(chalk.dim(`  Docs bundle: ${Math.round(docsBundle.length / 1024)}KB`));
+  console.log(chalk.dim(`  Docs outline: ${Math.round(docsOutline.length / 1024)}KB (headings only)`));
 
   // Phase 1: Assess
   console.log('');
-  const plan = await assess(docsBundle, diff);
+  const plan = await assess(docsOutline, diff);
 
   if (!plan || !plan.meaningful || !plan.actions?.length) {
     console.log(chalk.dim('\nNo product documentation updates needed.'));

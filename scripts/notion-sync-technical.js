@@ -14,6 +14,14 @@ const MODEL = 'claude-sonnet-4-6';
 const CONCURRENCY = 3;
 const REPO_LABEL = process.env.REPO_LABEL;
 
+function extractHeadings(markdown) {
+  return markdown
+    .split('\n')
+    .filter((line) => /^#{1,3}\s/.test(line))
+    .map((line) => line.trim())
+    .join('\n');
+}
+
 // ---------------------------------------------------------------------------
 // Log helpers
 // ---------------------------------------------------------------------------
@@ -72,7 +80,7 @@ All documentation lives in Notion under two top-level sections:
 - **Product** — manually curated vision, features, and strategy docs. NEVER modify these.
 - **Technical** — architecture, conventions, and implementation docs. This is your scope.
 
-The Technical section you can update (full current content of each page):
+The Technical section you can update (section headings per page — shows what topics are covered):
 ${docsBundle}
 
 Technical root page ID: ${rootId}
@@ -443,20 +451,21 @@ async function main() {
   }
   console.log(`  ${chalk.bold(docsIndex.length)} pages fetched`);
 
-  // Build docs bundle (same format as rebuild)
-  let docsBundle = '';
+  // Build docs outline (headings only — for assessor)
+  let docsOutline = '';
   for (const doc of docsIndex) {
     const filePath = path.resolve(SCRIPTS_DIR, '../..', doc.file);
     if (fs.existsSync(filePath)) {
       const content = fs.readFileSync(filePath, 'utf8');
-      docsBundle += `\n---\n\n- "${doc.title}" (${doc.path}) [${doc.id}]\n\n${content}\n`;
+      const headings = extractHeadings(content);
+      docsOutline += `\n---\n\n"${doc.title}" (${doc.path}) [${doc.id}]\n${headings || '(no headings)'}\n`;
     }
   }
-  console.log(chalk.dim(`  Docs bundle: ${Math.round(docsBundle.length / 1024)}KB`));
+  console.log(chalk.dim(`  Docs outline: ${Math.round(docsOutline.length / 1024)}KB (headings only)`));
 
   // Phase 1: Assess
   console.log('');
-  const plan = await assess(docsBundle, diff);
+  const plan = await assess(docsOutline, diff);
 
   if (!plan || !plan.meaningful || !plan.actions?.length) {
     console.log(chalk.dim('\nNo documentation updates needed.'));

@@ -67,31 +67,31 @@ function generateManifest() {
   ].join('\n');
 }
 
-function buildDocsBundle() {
-  if (!fs.existsSync(DOCS_DIR)) return '';
+function extractHeadings(markdown) {
+  return markdown
+    .split('\n')
+    .filter((line) => /^#{1,3}\s/.test(line))
+    .map((line) => line.trim())
+    .join('\n');
+}
 
-  const mdFiles = [];
-  function walk(dir) {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (entry.name.endsWith('.md')) mdFiles.push(full);
-    }
-  }
-  walk(DOCS_DIR);
-  mdFiles.sort();
+function buildDocsOutline(docsIndex) {
+  if (!fs.existsSync(DOCS_DIR)) return '(No documentation exists — bootstrap mode)';
 
   const parts = [
-    '# All Documentation Pages',
-    '',
-    'Each page is separated by <!-- SOURCE: path --> markers.',
-    'Use _docs/_index.json for page IDs when writing back to Notion.',
+    'Each page lists its section headings so you can see what topics are already covered.',
+    'Use the docs index page IDs when referencing pages in your plan.',
     '',
   ];
 
-  for (const f of mdFiles) {
-    const rel = path.relative(REPO_ROOT, f);
-    parts.push('---', '', `<!-- SOURCE: ${rel} -->`, '', fs.readFileSync(f, 'utf8'), '');
+  for (const doc of docsIndex) {
+    const filePath = path.resolve(REPO_ROOT, doc.file);
+    if (!fs.existsSync(filePath)) continue;
+    const content = fs.readFileSync(filePath, 'utf8');
+    const headings = extractHeadings(content);
+    parts.push(`---\n\n"${doc.title}" (${doc.path}) [${doc.id}]`);
+    parts.push(headings || '(no headings)');
+    parts.push('');
   }
 
   return parts.join('\n');
@@ -126,14 +126,14 @@ async function prepare() {
     console.log(`    ${chalk.cyan(doc.title || doc.path)} ${chalk.dim(`[${doc.id}]`)}`);
   }
 
-  // 4. Build docs bundle
-  console.log(chalk.cyan('\n  Bundling documentation…'));
-  const docsBundle = buildDocsBundle();
-  console.log(`  Bundle: ${chalk.bold(`${Math.round(docsBundle.length / 1024)}KB`)}`);
+  // 4. Build docs outline (headings only — for orchestrator)
+  console.log(chalk.cyan('\n  Building documentation outline…'));
+  const docsOutline = buildDocsOutline(docsIndex);
+  console.log(`  Outline: ${chalk.bold(`${Math.round(docsOutline.length / 1024)}KB`)} (headings only)`);
 
   const phaseElapsed = Math.round((Date.now() - phaseStart) / 1000);
   console.log(chalk.dim(`\n  Phase A completed in ${phaseElapsed}s`));
-  return { manifest, docsBundle, docsIndex };
+  return { manifest, docsOutline, docsIndex };
 }
 
 // ---------------------------------------------------------------------------
@@ -171,14 +171,14 @@ const PLAN_SCHEMA = {
   required: ['state', 'reasoning', 'tasks'],
 };
 
-function buildOrchestratorPrompt(manifest, docsBundle, docsIndex) {
+function buildOrchestratorPrompt(manifest, docsOutline, docsIndex) {
   return `You are a documentation planning agent for the Strive learning platform.
 
 ## Your job
 
-Analyze the codebase file listing and existing documentation, then produce a structured
-plan. Each task in your plan will be executed by an independent worker agent that has
-access to the full codebase via Read, Glob, and Grep tools.
+Analyze the codebase file listing and existing documentation outline, then produce a
+structured plan. Each task in your plan will be executed by an independent worker agent
+that has access to the full codebase via Read, Glob, and Grep tools.
 
 ${DOC_STANDARDS.DOCUMENTATION_PHILOSOPHY}
 
@@ -194,7 +194,7 @@ ${DOC_STANDARDS.DOCUMENTATION_PHILOSOPHY}
 - Each task maps to ONE documentation page (one Notion write operation)
 - Always use 'rewrite' for existing pages — never 'append'. Appending causes duplication
   and drift. Produce complete page content with changes integrated.
-- For 'rewrite': include page_id from the docs index
+- For 'rewrite': include page_id and current_doc_file from the docs index
 - For 'create': MUST include parent_id and title. Use the page ID of the parent page
   from the docs index — NOT the technical root ID. Sub-pages go under their parent.
   For example, an "Architecture" page about the API should have the API page's ID as
@@ -223,10 +223,12 @@ ${DOC_STANDARDS.PAGE_STRUCTURE}
 ### CODEBASE MANIFEST (all source files)
 ${manifest}
 
-### CURRENT DOCUMENTATION
-${docsBundle || '(No documentation exists — bootstrap mode)'}
+### CURRENT DOCUMENTATION OUTLINE (section headings per page)
+Below are the section headings for each existing documentation page. This shows you
+what topics are already covered. Workers will receive the full page content when rewriting.
+${docsOutline}
 
-### DOCS INDEX (Notion page IDs)
+### DOCS INDEX (Notion page IDs and file paths)
 ${JSON.stringify(docsIndex, null, 2)}
 
 ### TECHNICAL ROOT PAGE ID
@@ -239,12 +241,12 @@ exactly what to document, what to verify, and what the page should cover.
 Omit tasks for pages that are already accurate — only include work that needs doing.`;
 }
 
-async function orchestrate(manifest, docsBundle, docsIndex) {
+async function orchestrate(manifest, docsOutline, docsIndex) {
   const phaseStart = Date.now();
   console.log(phaseHeader('Phase B: Plan'));
   console.log(chalk.cyan('  Running orchestrator agent…'));
 
-  const prompt = buildOrchestratorPrompt(manifest, docsBundle, docsIndex);
+  const prompt = buildOrchestratorPrompt(manifest, docsOutline, docsIndex);
   console.log(chalk.dim(`  Prompt: ${Math.round(prompt.length / 1024)}KB`));
 
   const conversation = query({
@@ -625,10 +627,10 @@ async function main() {
   console.log(separator());
 
   // Phase A
-  const { manifest, docsBundle, docsIndex } = await prepare();
+  const { manifest, docsOutline, docsIndex } = await prepare();
 
   // Phase B
-  const plan = await orchestrate(manifest, docsBundle, docsIndex);
+  const plan = await orchestrate(manifest, docsOutline, docsIndex);
 
   if (plan.tasks.length === 0) {
     console.log(chalk.dim('\nNo tasks to execute. Documentation is up to date.'));
