@@ -78,9 +78,10 @@ async function appendBlocks(pageId, blocks) {
 
 async function rewritePage(pageId, markdownFile) {
   const markdown = sanitizeMarkdownLinks(fs.readFileSync(markdownFile, 'utf8'));
-  const blocks = markdownToBlocks(markdown);
+  const newBlocks = markdownToBlocks(markdown);
 
-  // Delete all existing blocks
+  // 1. Collect existing content block IDs (never touch child pages or databases)
+  const oldBlockIds = [];
   let cursor;
   do {
     const res = await notion.blocks.children.list({
@@ -89,17 +90,25 @@ async function rewritePage(pageId, markdownFile) {
       page_size: 100,
     });
     for (const block of res.results) {
-      try {
-        await notion.blocks.delete({ block_id: block.id });
-      } catch (_) {
-        // Some block types can't be deleted
-      }
+      if (block.type === 'child_page' || block.type === 'child_database') continue;
+      oldBlockIds.push(block.id);
     }
     cursor = res.next_cursor;
   } while (cursor);
 
-  await appendBlocks(pageId, blocks);
-  console.log(`${chalk.green('✓')} Rewrote page ${chalk.dim(pageId)} ${chalk.dim(`(${blocks.length} blocks)`)}`);
+  // 2. Append new content first (safe — old content still exists if this fails)
+  await appendBlocks(pageId, newBlocks);
+
+  // 3. Delete old content blocks now that new content is in place
+  for (const blockId of oldBlockIds) {
+    try {
+      await notion.blocks.delete({ block_id: blockId });
+    } catch (_) {
+      // Some block types can't be deleted — skip
+    }
+  }
+
+  console.log(`${chalk.green('✓')} Rewrote page ${chalk.dim(pageId)} ${chalk.dim(`(${newBlocks.length} new, ${oldBlockIds.length} old removed)`)}`);
 }
 
 async function appendToPage(pageId, markdownFile) {
