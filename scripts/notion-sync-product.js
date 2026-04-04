@@ -121,7 +121,8 @@ ACTIONS
    entirely new feature area that genuinely has no home in ANY existing page. Individual
    behaviors, sub-features, or enhancements should be documented as sections within
    existing pages (via rewrite), NOT as separate pages. When in doubt, rewrite.
-   Provide parent_id, page_title, and instructions.
+   MUST provide parent_id (the page ID of the parent page, NOT the root), page_title,
+   and instructions. Sub-pages go under their parent.
 
 CRITICAL RULES
 - NEVER claim something is "not yet documented" unless you have carefully checked ALL

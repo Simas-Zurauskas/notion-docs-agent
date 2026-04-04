@@ -195,7 +195,10 @@ ${DOC_STANDARDS.DOCUMENTATION_PHILOSOPHY}
 - Always use 'rewrite' for existing pages — never 'append'. Appending causes duplication
   and drift. Produce complete page content with changes integrated.
 - For 'rewrite': include page_id from the docs index
-- For 'create': include parent_id from the docs index (or the technical root ID)
+- For 'create': MUST include parent_id and title. Use the page ID of the parent page
+  from the docs index — NOT the technical root ID. Sub-pages go under their parent.
+  For example, an "Architecture" page about the API should have the API page's ID as
+  parent_id. Only use the technical root ID for genuinely top-level pages.
 - For 'delete': include page_id — only for pages documenting removed features
 - For 'split': create separate child tasks (action: 'create') and one parent task
   (action: 'rewrite') that depends_on the children
@@ -269,6 +272,13 @@ async function orchestrate(manifest, docsBundle, docsIndex) {
     return { state: 'maintenance', reasoning: 'No changes needed', tasks: [] };
   }
 
+  // Validate create tasks have parent_id
+  for (const t of plan.tasks) {
+    if (t.action === 'create' && !t.parent_id) {
+      console.warn(chalk.yellow(`  ⚠ Task "${t.id}" is a create but has no parent_id — will fail at write time`));
+    }
+  }
+
   const stateColors = { bootstrap: chalk.magenta, growth: chalk.yellow, maintenance: chalk.green };
   const stateColor = stateColors[plan.state] || chalk.white;
   console.log(label('State:    ', stateColor(plan.state)));
@@ -277,7 +287,8 @@ async function orchestrate(manifest, docsBundle, docsIndex) {
   console.log('');
   for (const t of plan.tasks) {
     const priorityColor = t.priority === 1 ? chalk.red : t.priority === 2 ? chalk.yellow : chalk.dim;
-    console.log(`    ${priorityColor(`P${t.priority}`)} ${chalk.bold(t.action.padEnd(8))} ${chalk.cyan(t.section)}${t.page_id ? chalk.dim(` [${t.page_id}]`) : ''}`);
+    const idInfo = t.page_id ? ` [${t.page_id}]` : t.parent_id ? ` → parent [${t.parent_id}]` : '';
+    console.log(`    ${priorityColor(`P${t.priority}`)} ${chalk.bold(t.action.padEnd(8))} ${chalk.cyan(t.section)}${t.title ? ` "${t.title}"` : ''}${chalk.dim(idInfo)}`);
     console.log(chalk.dim(`       ${t.instructions.slice(0, 120)}${t.instructions.length > 120 ? '…' : ''}`));
   }
 

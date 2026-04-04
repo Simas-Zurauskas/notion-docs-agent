@@ -105,7 +105,9 @@ ACTIONS
    top-level system that genuinely has no home in ANY existing page. Individual features,
    agents, endpoints, or sub-systems should be documented as sections within existing
    pages (via rewrite), NOT as separate pages. When in doubt, choose rewrite.
-   Provide parent_id, page_title, and instructions.
+   MUST provide parent_id (the page ID of the parent page, NOT the root), page_title,
+   and instructions. Sub-pages go under their parent — e.g. an API sub-page uses the
+   API page's ID as parent_id.
 
 3. **crosslink** — Add a cross-reference note to a page when a change in this repo
    has implications for documentation in another section. Provide page_id and instructions
