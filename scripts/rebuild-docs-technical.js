@@ -2,7 +2,7 @@
  * rebuild-docs.js — Multi-agent documentation engine.
  *
  * Orchestrates parallel Claude agents to audit and rebuild Notion documentation:
- *   Phase A: Prepare — fetch docs, generate manifest, bundle docs
+ *   Phase A: Prepare — fetch docs, generate manifest, build outline
  *   Phase B: Plan   — orchestrator agent produces structured task plan
  *   Phase C: Execute — worker agents read source files & write markdown in parallel,
  *                      then sequential Notion write pass applies changes
@@ -14,27 +14,20 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
-const { query } = require('@anthropic-ai/claude-agent-sdk');
 const chalk = require('chalk');
 const DOC_STANDARDS = require('./doc-standards-technical');
+const { label, separator, phaseHeader } = require('./lib/log-helpers');
+const { invokeAgent } = require('./lib/agent');
+const { loadDocsIndex, buildDocsOutline } = require('./lib/docs');
+const { PLAN_SCHEMA, WORKER_OUTPUT_SCHEMA } = require('./lib/schemas');
 
 const SCRIPTS_DIR = __dirname;
 const REPO_ROOT = process.env.REPO_ROOT || path.resolve(SCRIPTS_DIR, '../..');
-const DOCS_DIR = path.join(REPO_ROOT, '_docs');
-const DOCS_INDEX_PATH = path.join(DOCS_DIR, '_index.json');
+const DOCS_INDEX_PATH = path.join(REPO_ROOT, '_docs', '_index.json');
 const NOTION_TOOL = path.join(SCRIPTS_DIR, 'notion-tool.js');
 
 const CONCURRENCY = 5;
 const WORKER_MAX_TURNS = 30;
-const MODEL = 'claude-sonnet-4-6';
-
-// ---------------------------------------------------------------------------
-// Log helpers
-// ---------------------------------------------------------------------------
-
-const label = (key, val) => `  ${chalk.bold(key)} ${val}`;
-const separator = () => chalk.dim('─'.repeat(60));
-const phaseHeader = (name) => chalk.bold.cyan(`\n${name}`);
 
 // ---------------------------------------------------------------------------
 // Phase A: Prepare
@@ -67,36 +60,6 @@ function generateManifest() {
   ].join('\n');
 }
 
-function extractHeadings(markdown) {
-  return markdown
-    .split('\n')
-    .filter((line) => /^#{1,3}\s/.test(line))
-    .map((line) => line.trim())
-    .join('\n');
-}
-
-function buildDocsOutline(docsIndex) {
-  if (!fs.existsSync(DOCS_DIR)) return '(No documentation exists — bootstrap mode)';
-
-  const parts = [
-    'Each page lists its section headings so you can see what topics are already covered.',
-    'Use the docs index page IDs when referencing pages in your plan.',
-    '',
-  ];
-
-  for (const doc of docsIndex) {
-    const filePath = path.resolve(REPO_ROOT, doc.file);
-    if (!fs.existsSync(filePath)) continue;
-    const content = fs.readFileSync(filePath, 'utf8');
-    const headings = extractHeadings(content);
-    parts.push(`---\n\n"${doc.title}" (${doc.path}) [${doc.id}]`);
-    parts.push(headings || '(no headings)');
-    parts.push('');
-  }
-
-  return parts.join('\n');
-}
-
 async function prepare() {
   const phaseStart = Date.now();
   console.log(phaseHeader('Phase A: Prepare'));
@@ -117,10 +80,7 @@ async function prepare() {
   console.log(`  ${chalk.bold(fileCount)} source files, ${manifest.split('\n').length} manifest lines`);
 
   // 3. Read docs index
-  let docsIndex = [];
-  if (fs.existsSync(DOCS_INDEX_PATH)) {
-    docsIndex = JSON.parse(fs.readFileSync(DOCS_INDEX_PATH, 'utf8'));
-  }
+  const docsIndex = loadDocsIndex(DOCS_INDEX_PATH);
   console.log(`\n  Docs index: ${chalk.bold(docsIndex.length)} pages`);
   for (const doc of docsIndex) {
     console.log(`    ${chalk.cyan(doc.title || doc.path)} ${chalk.dim(`[${doc.id}]`)}`);
@@ -128,7 +88,7 @@ async function prepare() {
 
   // 4. Build docs outline (headings only — for orchestrator)
   console.log(chalk.cyan('\n  Building documentation outline…'));
-  const docsOutline = buildDocsOutline(docsIndex);
+  const docsOutline = buildDocsOutline(docsIndex, REPO_ROOT);
   console.log(`  Outline: ${chalk.bold(`${Math.round(docsOutline.length / 1024)}KB`)} (headings only)`);
 
   const phaseElapsed = Math.round((Date.now() - phaseStart) / 1000);
@@ -139,37 +99,6 @@ async function prepare() {
 // ---------------------------------------------------------------------------
 // Phase B: Plan (orchestrator agent)
 // ---------------------------------------------------------------------------
-
-const PLAN_SCHEMA = {
-  type: 'object',
-  properties: {
-    state: {
-      type: 'string',
-      enum: ['bootstrap', 'growth', 'maintenance'],
-    },
-    reasoning: { type: 'string' },
-    tasks: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          id: { type: 'string' },
-          action: { type: 'string', enum: ['rewrite', 'create', 'delete', 'rename', 'split'] },
-          page_id: { type: 'string' },
-          parent_id: { type: 'string' },
-          title: { type: 'string' },
-          section: { type: 'string' },
-          current_doc_file: { type: 'string' },
-          instructions: { type: 'string' },
-          priority: { type: 'integer', minimum: 1, maximum: 3 },
-          depends_on: { type: 'array', items: { type: 'string' } },
-        },
-        required: ['id', 'action', 'section', 'instructions', 'priority'],
-      },
-    },
-  },
-  required: ['state', 'reasoning', 'tasks'],
-};
 
 function buildOrchestratorPrompt(manifest, docsOutline, docsIndex) {
   return `You are a documentation planning agent for the Strive learning platform.
@@ -249,25 +178,7 @@ async function orchestrate(manifest, docsOutline, docsIndex) {
   const prompt = buildOrchestratorPrompt(manifest, docsOutline, docsIndex);
   console.log(chalk.dim(`  Prompt: ${Math.round(prompt.length / 1024)}KB`));
 
-  const conversation = query({
-    prompt,
-    options: {
-      model: MODEL,
-      maxTurns: 5,
-      outputFormat: { type: 'json_schema', schema: PLAN_SCHEMA },
-      allowedTools: [],
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
-      cwd: REPO_ROOT,
-    },
-  });
-
-  let plan;
-  for await (const event of conversation) {
-    if (event.type === 'result' && event.subtype === 'success') {
-      plan = event.structured_output || JSON.parse(event.result);
-    }
-  }
+  const plan = await invokeAgent({ prompt, schema: PLAN_SCHEMA, maxTurns: 5, cwd: REPO_ROOT });
 
   if (!plan || !plan.tasks?.length) {
     console.log(chalk.dim('  Orchestrator produced no tasks — documentation is up to date.'));
@@ -303,22 +214,6 @@ async function orchestrate(manifest, docsOutline, docsIndex) {
 // ---------------------------------------------------------------------------
 // Phase C: Execute (workers + Notion writes)
 // ---------------------------------------------------------------------------
-
-const WORKER_OUTPUT_SCHEMA = {
-  type: 'object',
-  properties: {
-    task_id: { type: 'string' },
-    action: { type: 'string' },
-    markdown: { type: 'string' },
-    page_id: { type: 'string' },
-    parent_id: { type: 'string' },
-    title: { type: 'string' },
-    summary: { type: 'string' },
-    skipped: { type: 'boolean' },
-    skip_reason: { type: 'string' },
-  },
-  required: ['task_id', 'action', 'markdown', 'summary', 'skipped'],
-};
 
 function buildWorkerPrompt(task, manifest) {
   let currentDoc = '';
@@ -382,34 +277,18 @@ async function runWorkerAgent(task, manifest) {
   const prompt = buildWorkerPrompt(task, manifest);
 
   try {
-    const conversation = query({
+    const result = await invokeAgent({
       prompt,
-      options: {
-        model: MODEL,
-        maxTurns: WORKER_MAX_TURNS,
-        outputFormat: { type: 'json_schema', schema: WORKER_OUTPUT_SCHEMA },
-        allowedTools: ['Read', 'Glob', 'Grep'],
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-        cwd: REPO_ROOT,
-      },
+      schema: WORKER_OUTPUT_SCHEMA,
+      maxTurns: WORKER_MAX_TURNS,
+      tools: ['Read', 'Glob', 'Grep'],
+      cwd: REPO_ROOT,
     });
-
-    let result;
-    for await (const event of conversation) {
-      if (event.type === 'result' && event.subtype === 'success') {
-        result = event.structured_output || JSON.parse(event.result);
-      }
-    }
 
     if (!result) {
       return {
-        task_id: task.id,
-        action: task.action,
-        markdown: '',
-        summary: 'Worker produced no output',
-        skipped: true,
-        skip_reason: 'No structured output returned',
+        task_id: task.id, action: task.action, markdown: '', summary: 'Worker produced no output',
+        skipped: true, skip_reason: 'No structured output returned',
       };
     }
 
@@ -421,12 +300,8 @@ async function runWorkerAgent(task, manifest) {
     return result;
   } catch (err) {
     return {
-      task_id: task.id,
-      action: task.action,
-      markdown: '',
-      summary: `Worker error: ${err.message}`,
-      skipped: true,
-      skip_reason: err.message,
+      task_id: task.id, action: task.action, markdown: '', summary: `Worker error: ${err.message}`,
+      skipped: true, skip_reason: err.message,
     };
   }
 }
@@ -461,14 +336,12 @@ function partitionTasks(tasks) {
       independent.push(t);
     }
   }
-  // Sort by priority (1 = highest)
   independent.sort((a, b) => a.priority - b.priority);
   dependent.sort((a, b) => a.priority - b.priority);
   return { independent, dependent };
 }
 
 function resolveDependencies(dependentTasks, writeLog) {
-  // Build map of task_id → created Notion page ID
   const createdIds = {};
   for (const entry of writeLog) {
     if (entry.created_id) {
@@ -477,7 +350,6 @@ function resolveDependencies(dependentTasks, writeLog) {
   }
 
   return dependentTasks.map((task) => {
-    // Inject created page IDs into instructions
     const resolvedIds = (task.depends_on || [])
       .map((depId) => (createdIds[depId] ? `"${depId}" → page ID: ${createdIds[depId]}` : null))
       .filter(Boolean);
@@ -491,11 +363,13 @@ function resolveDependencies(dependentTasks, writeLog) {
 }
 
 // ---------------------------------------------------------------------------
-// Notion write pass
+// Notion write pass (rebuild-specific: task-based, supports delete/rename)
 // ---------------------------------------------------------------------------
 
 function writeToNotion(results) {
   const writeLog = [];
+  const tool = `node ${NOTION_TOOL}`;
+  const env = { ...process.env };
 
   for (const result of results) {
     if (result.skipped) {
@@ -510,12 +384,8 @@ function writeToNotion(results) {
       continue;
     }
 
-    // Write markdown to temp file
     const tmpFile = `/tmp/doc_${result.task_id.replace(/[^a-z0-9_-]/gi, '_')}.md`;
     fs.writeFileSync(tmpFile, result.markdown);
-
-    const env = { ...process.env };
-    const tool = `node ${NOTION_TOOL}`;
 
     try {
       let output;
@@ -525,18 +395,9 @@ function writeToNotion(results) {
           writeLog.push({ task_id: result.task_id, status: 'success', action: 'rewrite' });
           break;
 
-        case 'append':
-          output = execSync(`${tool} append ${result.page_id} ${tmpFile}`, { env, encoding: 'utf8' });
-          writeLog.push({ task_id: result.task_id, status: 'success', action: 'append' });
-          break;
-
         case 'create': {
           if (!result.title || !result.parent_id) {
-            writeLog.push({
-              task_id: result.task_id,
-              status: 'error',
-              error: `Missing title ("${result.title}") or parent_id ("${result.parent_id}")`,
-            });
+            writeLog.push({ task_id: result.task_id, status: 'error', error: `Missing title ("${result.title}") or parent_id ("${result.parent_id}")` });
             console.log(`    ${chalk.red('✗')} ${result.task_id}: ${chalk.red('create — missing title or parent_id')}`);
             continue;
           }
@@ -555,7 +416,7 @@ function writeToNotion(results) {
 
         case 'rename': {
           if (!result.title || !result.page_id) {
-            writeLog.push({ task_id: result.task_id, status: 'error', error: `Missing title or page_id` });
+            writeLog.push({ task_id: result.task_id, status: 'error', error: 'Missing title or page_id' });
             console.log(`    ${chalk.red('✗')} ${result.task_id}: ${chalk.red('rename — missing title or page_id')}`);
             continue;
           }

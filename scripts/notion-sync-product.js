@@ -1,69 +1,27 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
-const { query } = require('@anthropic-ai/claude-agent-sdk');
 const chalk = require('chalk');
 const DOC_STANDARDS = require('./doc-standards-product');
+const { label, separator, prRef, changeMeta } = require('./lib/log-helpers');
+const { invokeAgent } = require('./lib/agent');
+const { loadDocsIndex, buildDocsOutline, loadPageContent } = require('./lib/docs');
+const { assessSchema, GENERATE_SCHEMA } = require('./lib/schemas');
+const { writeResults } = require('./lib/notion-writer');
 
 const SCRIPTS_DIR = __dirname;
+const REPO_ROOT = path.resolve(SCRIPTS_DIR, '../..');
 const NOTION_TOOL = path.join(SCRIPTS_DIR, 'notion-tool.js');
-
-const MODEL = 'claude-sonnet-4-6';
 const CONCURRENCY = 3;
 const REPO_LABEL = process.env.REPO_LABEL;
 
-function extractHeadings(markdown) {
-  return markdown
-    .split('\n')
-    .filter((line) => /^#{1,3}\s/.test(line))
-    .map((line) => line.trim())
-    .join('\n');
-}
-
-// ---------------------------------------------------------------------------
-// Log helpers
-// ---------------------------------------------------------------------------
-
-const label = (key, val) => `  ${chalk.bold(key)} ${val}`;
-const separator = () => chalk.dim('─'.repeat(60));
-
-function prRef() {
-  const num = process.env.PR_NUMBER;
-  return num && num !== '0' ? `PR #${num}` : 'push';
-}
-
-function changeMeta() {
-  return `${prRef()} by ${process.env.PR_AUTHOR} · ${new Date().toISOString().split('T')[0]}`;
-}
+const ASSESS_SCHEMA = assessSchema(['rewrite', 'create']);
 
 // ---------------------------------------------------------------------------
 // Phase 1: Assess
 // ---------------------------------------------------------------------------
 
-const ASSESS_SCHEMA = {
-  type: 'object',
-  properties: {
-    meaningful: { type: 'boolean' },
-    reasoning: { type: 'string' },
-    actions: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          type: { type: 'string', enum: ['rewrite', 'create'] },
-          page_id: { type: 'string' },
-          parent_id: { type: 'string' },
-          page_title: { type: 'string' },
-          instructions: { type: 'string' },
-        },
-        required: ['type', 'instructions'],
-      },
-    },
-  },
-  required: ['meaningful', 'reasoning', 'actions'],
-};
-
-function buildAssessPrompt(docsBundle, diff) {
+function buildAssessPrompt(docsOutline, diff) {
   const rootId = process.env.NOTION_PRODUCT_ROOT_ID;
 
   return `You are a product documentation agent for Strive, an AI-powered learning platform.
@@ -83,7 +41,7 @@ names, no API endpoints, no schema fields, no inline code backticks. Describe ev
 in plain language.
 
 The "How Strive Works" pages you can update (section headings per page — shows what topics are covered):
-${docsBundle}
+${docsOutline}
 
 Root page ID: ${rootId}
 
@@ -134,7 +92,7 @@ ACTIONS
 
 CRITICAL RULES
 - NEVER claim something is "not yet documented" unless you have carefully checked ALL
-  existing page content above. You have the full content of every page — use it.
+  existing page headings above.
 - STRONGLY prefer rewriting existing pages over creating new ones.
 - Most changes should result in NO updates (set meaningful to false).
 
@@ -144,32 +102,14 @@ For each action, write detailed instructions explaining:
 - What the content writer should emphasize (remember: NO code references in output)`;
 }
 
-async function assess(docsBundle, diff) {
+async function assess(docsOutline, diff) {
   const phaseStart = Date.now();
   console.log(chalk.magenta('Phase 1: Assess'));
 
-  const prompt = buildAssessPrompt(docsBundle, diff);
+  const prompt = buildAssessPrompt(docsOutline, diff);
   console.log(chalk.dim(`  Prompt: ${Math.round(prompt.length / 1024)}KB`));
 
-  const conversation = query({
-    prompt,
-    options: {
-      model: MODEL,
-      maxTurns: 1,
-      outputFormat: { type: 'json_schema', schema: ASSESS_SCHEMA },
-      allowedTools: [],
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
-    },
-  });
-
-  let plan;
-  for await (const event of conversation) {
-    if (event.type === 'result' && event.subtype === 'success') {
-      plan = event.structured_output || JSON.parse(event.result);
-    }
-  }
-
+  const plan = await invokeAgent({ prompt, schema: ASSESS_SCHEMA });
   const elapsed = Math.round((Date.now() - phaseStart) / 1000);
 
   if (!plan) {
@@ -193,18 +133,6 @@ async function assess(docsBundle, diff) {
 // ---------------------------------------------------------------------------
 // Phase 2: Generate (per-page workers)
 // ---------------------------------------------------------------------------
-
-const GENERATE_SCHEMA = {
-  type: 'object',
-  properties: {
-    page_title: { type: 'string' },
-    markdown: { type: 'string' },
-    summary: { type: 'string' },
-    skipped: { type: 'boolean' },
-    skip_reason: { type: 'string' },
-  },
-  required: ['page_title', 'markdown', 'summary', 'skipped'],
-};
 
 function buildWorkerPrompt(action, pageContent, diff) {
   return `You are a product documentation writer for Strive, an AI-powered learning platform.
@@ -254,32 +182,12 @@ set skipped to true with a skip_reason.`;
 }
 
 async function runWorker(action, pageContent, diff) {
-  const prompt = buildWorkerPrompt(action, pageContent, diff);
-
   try {
-    const conversation = query({
-      prompt,
-      options: {
-        model: MODEL,
-        maxTurns: 1,
-        outputFormat: { type: 'json_schema', schema: GENERATE_SCHEMA },
-        allowedTools: [],
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-      },
-    });
-
-    let result;
-    for await (const event of conversation) {
-      if (event.type === 'result' && event.subtype === 'success') {
-        result = event.structured_output || JSON.parse(event.result);
-      }
-    }
-
+    const prompt = buildWorkerPrompt(action, pageContent, diff);
+    const result = await invokeAgent({ prompt, schema: GENERATE_SCHEMA });
     if (!result) {
       return { page_title: action.page_title || '', markdown: '', summary: 'Worker produced no output', skipped: true, skip_reason: 'No structured output returned' };
     }
-
     return result;
   } catch (err) {
     return { page_title: action.page_title || '', markdown: '', summary: `Worker error: ${err.message}`, skipped: true, skip_reason: err.message };
@@ -300,14 +208,7 @@ async function generate(actions, docsIndex, diff) {
 
     const batchResults = await Promise.all(
       batch.map((action) => {
-        let pageContent = '';
-        if (action.page_id) {
-          const indexEntry = docsIndex.find((d) => d.id === action.page_id);
-          if (indexEntry?.file) {
-            const filePath = path.resolve(SCRIPTS_DIR, '../..', indexEntry.file);
-            if (fs.existsSync(filePath)) pageContent = fs.readFileSync(filePath, 'utf8');
-          }
-        }
+        const pageContent = loadPageContent(action.page_id, docsIndex, REPO_ROOT);
         return runWorker(action, pageContent, diff);
       })
     );
@@ -327,64 +228,6 @@ async function generate(actions, docsIndex, diff) {
   console.log(chalk.dim(`  Phase 2 completed in ${elapsed}s`));
 
   return results;
-}
-
-// ---------------------------------------------------------------------------
-// Phase 3: Write to Notion
-// ---------------------------------------------------------------------------
-
-function writeToNotion(actions, contentResults) {
-  const writeLog = [];
-  const tool = `node ${NOTION_TOOL}`;
-  const env = { ...process.env };
-
-  for (let i = 0; i < actions.length; i++) {
-    const action = actions[i];
-    const result = contentResults[i];
-
-    if (result.skipped) {
-      writeLog.push({ status: 'skipped', type: action.type, page: action.page_title || action.type, detail: result.skip_reason });
-      console.log(`    ${chalk.yellow('○')} ${action.page_title || action.type}: ${chalk.yellow(`skipped — ${result.skip_reason}`)}`);
-      continue;
-    }
-
-    if (!result.markdown?.trim()) {
-      writeLog.push({ status: 'skipped', type: action.type, page: action.page_title || action.type, detail: 'Empty markdown' });
-      console.log(`    ${chalk.yellow('○')} ${action.page_title || action.type}: ${chalk.yellow('skipped — empty markdown')}`);
-      continue;
-    }
-
-    const metaLine = action.type === 'create'
-      ? `\n\n*Created: ${changeMeta()}*`
-      : `\n\n*Rewritten: ${changeMeta()}*`;
-    const markdown = result.markdown + metaLine;
-
-    const tmpFile = `/tmp/sync_product_${action.type}_${(action.page_id || action.page_title || 'new').replace(/[^a-z0-9_-]/gi, '_')}.md`;
-    fs.writeFileSync(tmpFile, markdown);
-
-    try {
-      switch (action.type) {
-        case 'rewrite':
-          execSync(`${tool} rewrite ${action.page_id} ${tmpFile}`, { env, encoding: 'utf8', stdio: 'pipe' });
-          writeLog.push({ status: 'ok', type: 'rewrite', page: action.page_title, id: action.page_id, detail: `${result.markdown.length} chars` });
-          break;
-        case 'create': {
-          const title = (action.page_title || result.page_title).replace(/"/g, '\\"');
-          const output = execSync(`${tool} create ${action.parent_id} "${title}" ${tmpFile}`, { env, encoding: 'utf8', stdio: 'pipe' });
-          const match = output.match(/\[([a-f0-9-]+)\]/);
-          const createdId = match ? match[1] : null;
-          writeLog.push({ status: 'ok', type: 'create', page: action.page_title, id: createdId, detail: `parent: ${action.parent_id}` });
-          break;
-        }
-      }
-      console.log(`    ${chalk.green('✓')} ${chalk.bold(action.type)} "${action.page_title}"`);
-    } catch (err) {
-      writeLog.push({ status: 'error', type: action.type, page: action.page_title, id: action.page_id || action.parent_id, detail: err.message });
-      console.log(`    ${chalk.red('✗')} ${chalk.bold(action.type)} "${action.page_title}" — ${chalk.red(err.message)}`);
-    }
-  }
-
-  return writeLog;
 }
 
 // ---------------------------------------------------------------------------
@@ -414,40 +257,19 @@ async function main() {
   }
   console.log('');
 
-  // Fetch docs using fetch-notion-docs.js (proper markdown conversion)
-  // Product pages have no skip list — all pages are fetched
+  // Fetch docs using fetch-notion-docs.js
   console.log(chalk.magenta('Fetching documentation from Notion…'));
   execSync(`node ${path.join(SCRIPTS_DIR, 'fetch-notion-docs.js')}`, {
     cwd: SCRIPTS_DIR,
-    env: {
-      ...process.env,
-      NOTION_TECHNICAL_ROOT_ID: rootId,
-      SKIP_TECHNICAL_PAGE_IDS: '',
-      REPO_ROOT: path.resolve(SCRIPTS_DIR, '../..'),
-    },
+    env: { ...process.env, NOTION_TECHNICAL_ROOT_ID: rootId, SKIP_PAGE_IDS: '', REPO_ROOT },
     stdio: 'inherit',
   });
 
-  // Read fetched docs — move to product-specific dir to avoid collision with technical sync
-  // fetch-notion-docs.js writes to _docs/, we copy the index for our use
-  const defaultDocsDir = path.resolve(SCRIPTS_DIR, '../../_docs');
-  let docsIndex = [];
-  const defaultIndexPath = path.join(defaultDocsDir, '_index.json');
-  if (fs.existsSync(defaultIndexPath)) {
-    docsIndex = JSON.parse(fs.readFileSync(defaultIndexPath, 'utf8'));
-  }
+  const defaultIndexPath = path.join(REPO_ROOT, '_docs', '_index.json');
+  const docsIndex = loadDocsIndex(defaultIndexPath);
   console.log(`  ${chalk.bold(docsIndex.length)} pages fetched`);
 
-  // Build docs outline (headings only — for assessor)
-  let docsOutline = '';
-  for (const doc of docsIndex) {
-    const filePath = path.resolve(SCRIPTS_DIR, '../..', doc.file);
-    if (fs.existsSync(filePath)) {
-      const content = fs.readFileSync(filePath, 'utf8');
-      const headings = extractHeadings(content);
-      docsOutline += `\n---\n\n"${doc.title}" (${doc.path}) [${doc.id}]\n${headings || '(no headings)'}\n`;
-    }
-  }
+  const docsOutline = buildDocsOutline(docsIndex, REPO_ROOT);
   console.log(chalk.dim(`  Docs outline: ${Math.round(docsOutline.length / 1024)}KB (headings only)`));
 
   // Phase 1: Assess
@@ -483,7 +305,12 @@ async function main() {
   // Phase 3: Write to Notion
   console.log('');
   console.log(chalk.magenta('Phase 3: Write to Notion'));
-  const writeLog = writeToNotion(validActions, contentResults);
+  const writeLog = writeResults({
+    actions: validActions,
+    results: contentResults,
+    notionToolPath: NOTION_TOOL,
+    metaFn: (type) => type === 'create' ? `Created: ${changeMeta()}` : `Rewritten: ${changeMeta()}`,
+  });
 
   // Summary
   const elapsed = Math.round((Date.now() - startTime) / 1000);
