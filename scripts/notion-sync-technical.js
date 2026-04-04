@@ -1,29 +1,18 @@
 const fs = require('fs');
-const Anthropic = require('@anthropic-ai/sdk');
-const { Client } = require('@notionhq/client');
-const { markdownToBlocks } = require('@tryfabric/martian');
+const path = require('path');
+const { execSync } = require('child_process');
+const { query } = require('@anthropic-ai/claude-agent-sdk');
 const chalk = require('chalk');
 const DOC_STANDARDS = require('./doc-standards-technical');
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const notion = new Client({ auth: process.env.NOTION_API_KEY });
-const DELAY_MS = 350; // stay under Notion's 3 req/s limit
+const SCRIPTS_DIR = __dirname;
+const DOCS_DIR = path.resolve(SCRIPTS_DIR, '../../_docs');
+const DOCS_INDEX_PATH = path.join(DOCS_DIR, '_index.json');
+const NOTION_TOOL = path.join(SCRIPTS_DIR, 'notion-tool.js');
 
-function sanitizeMarkdownLinks(markdown) {
-  return markdown.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
-    if (/^https?:\/\//i.test(url)) return match;
-    return `\`${text}\``;
-  });
-}
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
+const MODEL = 'claude-sonnet-4-6';
+const CONCURRENCY = 3;
 const REPO_LABEL = process.env.REPO_LABEL;
-
-// Page IDs to skip (belong to other repos)
-// Normalize: strip hyphens so both "abc123" and "abc-123" formats match
-const SKIP_TECHNICAL_PAGE_IDS = new Set(
-  (process.env.SKIP_TECHNICAL_PAGE_IDS?.split(',') || []).map((id) => id.replace(/-/g, ''))
-);
 
 // ---------------------------------------------------------------------------
 // Log helpers
@@ -31,123 +20,6 @@ const SKIP_TECHNICAL_PAGE_IDS = new Set(
 
 const label = (key, val) => `  ${chalk.bold(key)} ${val}`;
 const separator = () => chalk.dim('─'.repeat(60));
-
-// ---------------------------------------------------------------------------
-// Notion helpers
-// ---------------------------------------------------------------------------
-
-async function fetchPageTree(blockId, path = '') {
-  const pages = [];
-  let cursor;
-  do {
-    const res = await notion.blocks.children.list({
-      block_id: blockId,
-      start_cursor: cursor,
-      page_size: 100,
-    });
-    for (const block of res.results) {
-      if (block.type === 'child_page') {
-        if (SKIP_TECHNICAL_PAGE_IDS.has(block.id.replace(/-/g, ''))) continue;
-        const title = block.child_page.title;
-        const fullPath = path ? `${path} > ${title}` : title;
-        pages.push({ id: block.id, title, path: fullPath });
-        const children = await fetchPageTree(block.id, fullPath);
-        pages.push(...children);
-      }
-    }
-    cursor = res.next_cursor;
-  } while (cursor);
-  return pages;
-}
-
-function richTextToPlain(richTexts) {
-  if (!richTexts) return '';
-  return richTexts.map((rt) => rt.plain_text || '').join('');
-}
-
-function blockToText(block) {
-  // Skip child_page blocks — they're navigation, not content
-  if (block.type === 'child_page' || block.type === 'child_database') return '';
-  const data = block[block.type];
-  if (!data) return '';
-  switch (block.type) {
-    case 'paragraph':
-    case 'bulleted_list_item':
-    case 'numbered_list_item':
-    case 'to_do':
-    case 'toggle':
-    case 'quote':
-    case 'callout':
-      return richTextToPlain(data.rich_text);
-    case 'heading_1':
-    case 'heading_2':
-    case 'heading_3':
-      return richTextToPlain(data.rich_text);
-    case 'code':
-      return richTextToPlain(data.rich_text);
-    default:
-      return '';
-  }
-}
-
-async function fetchPageSummary(pageId, maxChars = 1500) {
-  let text = '';
-  let cursor;
-  do {
-    await sleep(DELAY_MS);
-    const res = await notion.blocks.children.list({
-      block_id: pageId,
-      start_cursor: cursor,
-      page_size: 50,
-    });
-    for (const block of res.results) {
-      const line = blockToText(block);
-      if (line) text += line + '\n';
-      if (text.length >= maxChars) return text.slice(0, maxChars) + '…';
-    }
-    cursor = res.next_cursor;
-  } while (cursor);
-  return text.trim();
-}
-
-const RICH_TEXT_LIMIT = 2000;
-
-/** Split a single rich_text element into chunks that fit within Notion's 2000-char limit. */
-function splitRichText(rt) {
-  if (!rt.text?.content) return [rt]; // non-text types (equation, mention) — pass through
-  const text = rt.text.content;
-  if (text.length <= RICH_TEXT_LIMIT) return [rt];
-  const chunks = [];
-  for (let i = 0; i < text.length; i += RICH_TEXT_LIMIT) {
-    chunks.push({ ...rt, text: { ...rt.text, content: text.slice(i, i + RICH_TEXT_LIMIT) } });
-  }
-  return chunks;
-}
-
-/** Ensure every block's rich_text stays within the 2000-char limit. */
-function enforceRichTextLimits(blocks) {
-  for (const block of blocks) {
-    const inner = block[block.type];
-    if (inner?.rich_text) {
-      inner.rich_text = inner.rich_text.flatMap(splitRichText);
-    }
-  }
-  return blocks;
-}
-
-function metaBlock(text) {
-  return {
-    object: 'block',
-    type: 'paragraph',
-    paragraph: {
-      rich_text: [{ type: 'text', text: { content: text }, annotations: { color: 'gray', italic: true } }],
-    },
-  };
-}
-
-function divider() {
-  return { object: 'block', type: 'divider', divider: {} };
-}
 
 function prRef() {
   const num = process.env.PR_NUMBER;
@@ -159,74 +31,368 @@ function changeMeta() {
 }
 
 // ---------------------------------------------------------------------------
-// Actions
+// Phase 1: Assess
 // ---------------------------------------------------------------------------
 
-async function rewritePage(pageId, content) {
-  // Archive all existing blocks, then write fresh content
-  let cursor;
-  do {
-    const res = await notion.blocks.children.list({ block_id: pageId, start_cursor: cursor, page_size: 100 });
-    for (const block of res.results) {
-      try {
-        await notion.blocks.delete({ block_id: block.id });
-      } catch (_) {
-        // Some blocks (e.g. child_page) can't be deleted — skip them
+const ASSESS_SCHEMA = {
+  type: 'object',
+  properties: {
+    meaningful: { type: 'boolean' },
+    reasoning: { type: 'string' },
+    actions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          type: { type: 'string', enum: ['rewrite', 'create', 'crosslink'] },
+          page_id: { type: 'string' },
+          parent_id: { type: 'string' },
+          page_title: { type: 'string' },
+          instructions: { type: 'string' },
+        },
+        required: ['type', 'instructions'],
+      },
+    },
+  },
+  required: ['meaningful', 'reasoning', 'actions'],
+};
+
+function buildAssessPrompt(docsBundle, diff) {
+  const rootId = process.env.NOTION_TECHNICAL_ROOT_ID;
+
+  return `You are a living documentation agent for this project.
+You are operating in the **${REPO_LABEL}** repository.
+
+${DOC_STANDARDS.DOCUMENTATION_PHILOSOPHY}
+
+${DOC_STANDARDS.UPDATE_RULES}
+
+DOCUMENTATION STRUCTURE
+All documentation lives in Notion under two top-level sections:
+- **Product** — manually curated vision, features, and strategy docs. NEVER modify these.
+- **Technical** — architecture, conventions, and implementation docs. This is your scope.
+
+The Technical section you can update (full current content of each page):
+${docsBundle}
+
+Technical root page ID: ${rootId}
+
+CHANGE CONTEXT
+Repository: ${process.env.REPO_NAME}
+${prRef()}: ${process.env.PR_TITLE}
+Author: ${process.env.PR_AUTHOR}
+Description: ${process.env.PR_BODY || 'None provided'}
+
+Changed files:
+${process.env.CHANGED_FILES}
+
+Diff:
+${diff}
+
+YOUR TASK
+
+Assess whether this change requires documentation updates. You are ONLY producing a plan —
+do NOT write any page content. A separate agent will handle content generation based on
+your instructions.
+
+ACTIONS
+
+1. **rewrite** — PREFERRED for all changes. Flag an existing page for a full rewrite.
+   Provide page_id and clear instructions for the content writer about what to update
+   and how to integrate the changes into the existing page.
+
+2. **create** — RARELY used. Create a new page ONLY when the change introduces a major,
+   top-level system that genuinely has no home in ANY existing page. Individual features,
+   agents, endpoints, or sub-systems should be documented as sections within existing
+   pages (via rewrite), NOT as separate pages. When in doubt, choose rewrite.
+   Provide parent_id, page_title, and instructions.
+
+3. **crosslink** — Add a cross-reference note to a page when a change in this repo
+   has implications for documentation in another section. Provide page_id and instructions
+   describing the note to add.
+
+CRITICAL RULES
+- NEVER claim something is "not yet documented" unless you have carefully checked ALL
+  existing page content above. You have the full content of every page — use it.
+- STRONGLY prefer rewriting existing pages over creating new ones. A new agent, feature,
+  or endpoint should be a new SECTION in the relevant existing page, not a new page.
+- If you are unsure whether to create or rewrite, always choose rewrite.
+- If the change is trivial (dependency bump, formatting, minor CSS, test-only, internal
+  refactor that doesn't change public behavior), set meaningful to false.
+
+HIERARCHY RULES
+- Changes to this repo's internals → under this repo's section in the tree
+- Changes to how repos communicate → under the system-wide section
+- Auth changes → system-wide auth page if cross-repo, repo-specific if isolated
+- New external service integration → system-wide or repo-specific depending on scope
+- Never create a page at root level unless it is a genuinely top-level concern
+
+For each action, write detailed instructions explaining:
+- What changed in the code and why it matters for documentation
+- Which sections of the page need updating
+- What the content writer should verify or emphasize`;
+}
+
+async function assess(docsBundle, diff) {
+  const phaseStart = Date.now();
+  console.log(chalk.cyan('Phase 1: Assess'));
+
+  const prompt = buildAssessPrompt(docsBundle, diff);
+  console.log(chalk.dim(`  Prompt: ${Math.round(prompt.length / 1024)}KB`));
+
+  const conversation = query({
+    prompt,
+    options: {
+      model: MODEL,
+      maxTurns: 1,
+      outputFormat: { type: 'json_schema', schema: ASSESS_SCHEMA },
+      allowedTools: [],
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+    },
+  });
+
+  let plan;
+  for await (const event of conversation) {
+    if (event.type === 'result' && event.subtype === 'success') {
+      plan = event.structured_output || JSON.parse(event.result);
+    }
+  }
+
+  const elapsed = Math.round((Date.now() - phaseStart) / 1000);
+
+  if (!plan) {
+    console.log(chalk.yellow(`  No response from assessor ${chalk.dim(`(${elapsed}s)`)}`));
+    return null;
+  }
+
+  console.log(`  Meaningful: ${plan.meaningful ? chalk.green('yes') : chalk.yellow('no')} ${chalk.dim(`(${elapsed}s)`)}`);
+  console.log(`  Reasoning:  ${chalk.italic(plan.reasoning)}`);
+
+  if (plan.meaningful && plan.actions?.length) {
+    for (const a of plan.actions) {
+      console.log(`    ${chalk.bold(a.type.padEnd(10))} ${chalk.cyan(a.page_title || a.page_id || '(new)')}`);
+      console.log(chalk.dim(`       ${a.instructions.slice(0, 120)}${a.instructions.length > 120 ? '…' : ''}`));
+    }
+  }
+
+  return plan;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: Generate (per-page workers)
+// ---------------------------------------------------------------------------
+
+const GENERATE_SCHEMA = {
+  type: 'object',
+  properties: {
+    page_title: { type: 'string' },
+    markdown: { type: 'string' },
+    summary: { type: 'string' },
+    skipped: { type: 'boolean' },
+    skip_reason: { type: 'string' },
+  },
+  required: ['page_title', 'markdown', 'summary', 'skipped'],
+};
+
+function buildWorkerPrompt(action, pageContent, diff) {
+  return `You are a documentation writer for the Strive learning platform.
+You have ONE job: write complete, accurate documentation for a specific page.
+
+## Your assignment
+
+Page: ${action.page_title || '(new page)'}
+Action: ${action.type}
+
+## Instructions from the planner
+
+${action.instructions}
+
+## Current page content
+
+${pageContent || '(No existing documentation — write from scratch)'}
+
+## Code diff that triggered this update
+
+${diff}
+
+${DOC_STANDARDS.WRITING_STANDARDS}
+
+${DOC_STANDARDS.QUALITY_CRITERIA}
+
+${DOC_STANDARDS.PAGE_STRUCTURE}
+
+${DOC_STANDARDS.LINK_STANDARDS}
+
+## Output
+
+Write the COMPLETE page content as markdown. This will fully replace the existing page,
+so include ALL content — both updated sections and unchanged sections.
+Do not omit existing content that is still accurate.
+
+If after reviewing the diff and current content you determine no update is actually needed,
+set skipped to true with a skip_reason.`;
+}
+
+async function runWorker(action, pageContent, diff) {
+  const prompt = buildWorkerPrompt(action, pageContent, diff);
+
+  try {
+    const conversation = query({
+      prompt,
+      options: {
+        model: MODEL,
+        maxTurns: 1,
+        outputFormat: { type: 'json_schema', schema: GENERATE_SCHEMA },
+        allowedTools: [],
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+      },
+    });
+
+    let result;
+    for await (const event of conversation) {
+      if (event.type === 'result' && event.subtype === 'success') {
+        result = event.structured_output || JSON.parse(event.result);
       }
     }
-    cursor = res.next_cursor;
-  } while (cursor);
 
-  // Convert markdown to Notion blocks (preserves formatting)
-  const children = enforceRichTextLimits(markdownToBlocks(sanitizeMarkdownLinks(content)));
-  children.push(metaBlock(`Rewritten: ${changeMeta()}`));
+    if (!result) {
+      return { page_title: action.page_title || '', markdown: '', summary: 'Worker produced no output', skipped: true, skip_reason: 'No structured output returned' };
+    }
 
-  // Notion limits appending to 100 blocks at a time
-  for (let i = 0; i < children.length; i += 100) {
-    await notion.blocks.children.append({
-      block_id: pageId,
-      children: children.slice(i, i + 100),
-    });
+    return result;
+  } catch (err) {
+    return { page_title: action.page_title || '', markdown: '', summary: `Worker error: ${err.message}`, skipped: true, skip_reason: err.message };
   }
 }
 
-async function createPage(parentId, title, content, linksTo = []) {
-  const children = enforceRichTextLimits(markdownToBlocks(sanitizeMarkdownLinks(content)));
-  if (linksTo.length > 0) children.push(metaBlock(`Related pages: ${linksTo.join(', ')}`));
-  children.push(metaBlock(`Created: ${changeMeta()}`));
+async function generate(actions, docsIndex, diff) {
+  const phaseStart = Date.now();
+  console.log('');
+  console.log(chalk.cyan('Phase 2: Generate'));
 
-  // Notion limits children to 100 blocks per call — create with first batch, append the rest
-  const page = await notion.pages.create({
-    parent: { page_id: parentId },
-    properties: { title: { title: [{ type: 'text', text: { content: title } }] } },
-    children: children.slice(0, 100),
-  });
-  for (let i = 100; i < children.length; i += 100) {
-    await notion.blocks.children.append({
-      block_id: page.id,
-      children: children.slice(i, i + 100),
-    });
+  // Filter out crosslinks (they don't need content generation)
+  const contentActions = actions.filter((a) => a.type !== 'crosslink');
+  const crosslinks = actions.filter((a) => a.type === 'crosslink');
+
+  console.log(label('Content:', chalk.bold(`${contentActions.length} page(s)`)));
+  if (crosslinks.length) console.log(label('Crosslinks:', chalk.bold(`${crosslinks.length} (no generation needed)`)));
+
+  // Load current page content for each action
+  const results = [];
+  for (let i = 0; i < contentActions.length; i += CONCURRENCY) {
+    const batch = contentActions.slice(i, i + CONCURRENCY);
+    console.log(chalk.dim(`  Batch ${Math.floor(i / CONCURRENCY) + 1}: ${batch.map((a) => a.page_title || a.type).join(', ')}`));
+    const batchStart = Date.now();
+
+    const batchResults = await Promise.all(
+      batch.map((action) => {
+        // Find current page content from _docs
+        let pageContent = '';
+        if (action.page_id) {
+          const indexEntry = docsIndex.find((d) => d.id === action.page_id);
+          if (indexEntry?.file) {
+            const filePath = path.resolve(SCRIPTS_DIR, '../..', indexEntry.file);
+            if (fs.existsSync(filePath)) pageContent = fs.readFileSync(filePath, 'utf8');
+          }
+        }
+        return runWorker(action, pageContent, diff);
+      })
+    );
+
+    const batchElapsed = Math.round((Date.now() - batchStart) / 1000);
+    for (const r of batchResults) {
+      const icon = r.skipped ? chalk.yellow('○') : chalk.green('✓');
+      const status = r.skipped ? chalk.yellow(`skipped (${r.skip_reason})`) : r.summary;
+      const mdLen = r.markdown ? `${Math.round(r.markdown.length / 1024)}KB` : '0KB';
+      console.log(`    ${icon} ${r.page_title}: ${status} ${chalk.dim(`[${mdLen}]`)}`);
+    }
+    console.log(chalk.dim(`    Batch completed in ${batchElapsed}s`));
+    results.push(...batchResults);
   }
-  return page.id;
+
+  const elapsed = Math.round((Date.now() - phaseStart) / 1000);
+  console.log(chalk.dim(`  Phase 2 completed in ${elapsed}s`));
+
+  return { contentResults: results, crosslinks };
 }
 
-async function crosslinkPage(pageId, note) {
-  await notion.blocks.children.append({
-    block_id: pageId,
-    children: [
-      divider(),
-      {
-        object: 'block',
-        type: 'callout',
-        callout: {
-          rich_text: [{ type: 'text', text: { content: `Cross-repo update (${prRef()}): ${note}` } }],
-          icon: { type: 'emoji', emoji: '🔗' },
-          color: 'blue_background',
-        },
-      },
-      metaBlock(changeMeta()),
-    ],
-  });
+// ---------------------------------------------------------------------------
+// Phase 3: Write to Notion
+// ---------------------------------------------------------------------------
+
+function writeToNotion(actions, contentResults, crosslinks) {
+  const writeLog = [];
+  const tool = `node ${NOTION_TOOL}`;
+  const env = { ...process.env };
+
+  // Write content results (rewrite/create)
+  for (let i = 0; i < actions.filter((a) => a.type !== 'crosslink').length; i++) {
+    const action = actions.filter((a) => a.type !== 'crosslink')[i];
+    const result = contentResults[i];
+
+    if (result.skipped) {
+      writeLog.push({ status: 'skipped', type: action.type, page: action.page_title || action.type, detail: result.skip_reason });
+      console.log(`    ${chalk.yellow('○')} ${action.page_title || action.type}: ${chalk.yellow(`skipped — ${result.skip_reason}`)}`);
+      continue;
+    }
+
+    if (!result.markdown?.trim()) {
+      writeLog.push({ status: 'skipped', type: action.type, page: action.page_title || action.type, detail: 'Empty markdown' });
+      console.log(`    ${chalk.yellow('○')} ${action.page_title || action.type}: ${chalk.yellow('skipped — empty markdown')}`);
+      continue;
+    }
+
+    // Add change metadata footer
+    const metaLine = action.type === 'create'
+      ? `\n\n*Created: ${changeMeta()}*`
+      : `\n\n*Rewritten: ${changeMeta()}*`;
+    const markdown = result.markdown + metaLine;
+
+    const tmpFile = `/tmp/sync_${action.type}_${(action.page_id || action.page_title || 'new').replace(/[^a-z0-9_-]/gi, '_')}.md`;
+    fs.writeFileSync(tmpFile, markdown);
+
+    try {
+      switch (action.type) {
+        case 'rewrite':
+          execSync(`${tool} rewrite ${action.page_id} ${tmpFile}`, { env, encoding: 'utf8', stdio: 'pipe' });
+          writeLog.push({ status: 'ok', type: 'rewrite', page: action.page_title, id: action.page_id, detail: `${result.markdown.length} chars` });
+          break;
+        case 'create': {
+          const title = (action.page_title || result.page_title).replace(/"/g, '\\"');
+          const output = execSync(`${tool} create ${action.parent_id} "${title}" ${tmpFile}`, { env, encoding: 'utf8', stdio: 'pipe' });
+          const match = output.match(/\[([a-f0-9-]+)\]/);
+          const createdId = match ? match[1] : null;
+          writeLog.push({ status: 'ok', type: 'create', page: action.page_title, id: createdId, detail: `parent: ${action.parent_id}` });
+          break;
+        }
+      }
+      console.log(`    ${chalk.green('✓')} ${chalk.bold(action.type)} "${action.page_title}"`);
+    } catch (err) {
+      writeLog.push({ status: 'error', type: action.type, page: action.page_title, id: action.page_id || action.parent_id, detail: err.message });
+      console.log(`    ${chalk.red('✗')} ${chalk.bold(action.type)} "${action.page_title}" — ${chalk.red(err.message)}`);
+    }
+  }
+
+  // Write crosslinks
+  for (const action of crosslinks) {
+    const note = `Cross-repo update (${prRef()}): ${action.instructions}`;
+    const crosslinkMd = `---\n\n> 🔗 ${note}\n\n*${changeMeta()}*`;
+    const tmpFile = `/tmp/sync_crosslink_${(action.page_id || '').replace(/[^a-z0-9_-]/gi, '_')}.md`;
+    fs.writeFileSync(tmpFile, crosslinkMd);
+
+    try {
+      execSync(`${tool} append ${action.page_id} ${tmpFile}`, { env, encoding: 'utf8', stdio: 'pipe' });
+      writeLog.push({ status: 'ok', type: 'crosslink', page: action.page_title, id: action.page_id, detail: action.instructions.slice(0, 120) });
+      console.log(`    ${chalk.green('✓')} ${chalk.bold('crosslink')} "${action.page_title}"`);
+    } catch (err) {
+      writeLog.push({ status: 'error', type: 'crosslink', page: action.page_title, id: action.page_id, detail: err.message });
+      console.log(`    ${chalk.red('✗')} ${chalk.bold('crosslink')} "${action.page_title}" — ${chalk.red(err.message)}`);
+    }
+  }
+
+  return writeLog;
 }
 
 // ---------------------------------------------------------------------------
@@ -238,9 +404,9 @@ async function main() {
   const rootId = process.env.NOTION_TECHNICAL_ROOT_ID;
   if (!rootId) throw new Error('NOTION_TECHNICAL_ROOT_ID is required');
 
-  // Log change context
   const changedFiles = (process.env.CHANGED_FILES || '').split('\n').filter(Boolean);
   const diff = fs.readFileSync('/tmp/pr_diff.txt', 'utf8');
+
   console.log('');
   console.log(chalk.bold.cyan('TECHNICAL DOCS SYNC'));
   console.log(separator());
@@ -256,276 +422,94 @@ async function main() {
   }
   console.log('');
 
-  if (SKIP_TECHNICAL_PAGE_IDS.size) console.log(chalk.dim(`  Skipping page IDs: ${[...SKIP_TECHNICAL_PAGE_IDS].join(', ')}`));
-  console.log(chalk.cyan('Fetching Notion page tree…'));
-  const existingPages = await fetchPageTree(rootId);
-  console.log(`  Found ${chalk.bold(existingPages.length)} pages:`);
-  for (const p of existingPages) {
-    console.log(`    ${chalk.cyan(p.title)} ${chalk.dim(p.path !== p.title ? `(${p.path})` : '')}`);
-  }
-
-  console.log('');
-  console.log(chalk.cyan('Fetching page summaries…'));
-  let summaryFailed = 0;
-  let summaryChars = 0;
-  for (const page of existingPages) {
-    try {
-      const raw = await fetchPageSummary(page.id);
-      // Sanitize: collapse whitespace, remove non-printable chars, trim length
-      page.summary = raw
-        .replace(/[\r\n]+/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 800);
-      summaryChars += page.summary.length;
-    } catch (err) {
-      summaryFailed++;
-      console.warn(chalk.yellow(`  ⚠ Failed to fetch summary for "${page.title}": ${err.message}`));
-      page.summary = '(summary unavailable)';
-    }
-  }
-  const summaryOk = existingPages.length - summaryFailed;
-  console.log(`  ${chalk.green(`${summaryOk} OK`)}${summaryFailed ? `, ${chalk.yellow(`${summaryFailed} failed`)}` : ''} ${chalk.dim(`(${Math.round(summaryChars / 1024)}KB total)`)}`);
-
-  const prompt = `You are a living documentation agent for this project.
-You are operating in the **${REPO_LABEL}** repository.
-
-${DOC_STANDARDS.DOCUMENTATION_PHILOSOPHY}
-
-${DOC_STANDARDS.UPDATE_RULES}
-
-${DOC_STANDARDS.WRITING_STANDARDS}
-
-${DOC_STANDARDS.QUALITY_CRITERIA}
-
-${DOC_STANDARDS.PAGE_STRUCTURE}
-
-${DOC_STANDARDS.LINK_STANDARDS}
-
-DOCUMENTATION STRUCTURE
-All documentation lives in Notion under two top-level sections:
-- **Product** — manually curated vision, features, and strategy docs. NEVER modify these.
-- **Technical** — architecture, conventions, and implementation docs. This is your scope.
-
-The Technical section you can update (with current content summaries):
-${existingPages.map((p) => `- "${p.title}" (${p.path}) [${p.id}]\n  Current content: ${p.summary || '(empty)'}`).join('\n\n') || '(empty — first sync)'}
-
-Technical root page ID: ${rootId}
-
-CHANGE CONTEXT
-Repository: ${process.env.REPO_NAME}
-${prRef()}: ${process.env.PR_TITLE}
-Author: ${process.env.PR_AUTHOR}
-Description: ${process.env.PR_BODY || 'None provided'}
-
-Changed files:
-${process.env.CHANGED_FILES}
-
-Diff (truncated):
-${diff}
-
-ACTIONS
-
-1. **rewrite** — PREFERRED for all changes. Replace the full content of an existing
-   page with corrected, up-to-date documentation. Always rewrite the complete page —
-   never append or patch. You have the page's current content in the summary above —
-   use it as the starting point and integrate the changes into a clean, consolidated version.
-
-2. **create** — Create a new page only when the change introduces a concept, system,
-   or integration pattern that genuinely has no home in the existing structure.
-   Place it under the correct parent using parent_id from the tree above.
-
-3. **crosslink** — Add a cross-reference note to a page when a change in this repo
-   has implications for documentation in another section (e.g., a client auth change
-   that affects the system-wide Authentication page).
-
-4. **skip** — If the change is trivial (dependency bump, formatting, minor CSS,
-   test-only, internal refactor that doesn't change public behavior or introduce
-   new patterns).
-
-HIERARCHY RULES
-- Changes to this repo's internals → under this repo's section in the tree
-- Changes to how repos communicate → under the system-wide section
-- Auth changes → system-wide auth page if cross-repo, repo-specific if isolated
-- New external service integration → system-wide or repo-specific depending on scope
-- Never create a page at root level unless it is a genuinely top-level concern
-
-Respond ONLY in valid JSON (no markdown fences):
-{
-  "meaningful": boolean,
-  "reasoning": "One sentence: your architectural assessment of this change's documentation impact",
-  "actions": [
-    {
-      "type": "rewrite",
-      "page_id": "id",
-      "page_title": "title",
-      "content": "Complete replacement content for the page"
+  // Fetch docs using fetch-notion-docs.js (proper markdown conversion + page exclusion)
+  console.log(chalk.cyan('Fetching documentation from Notion…'));
+  execSync(`node ${path.join(SCRIPTS_DIR, 'fetch-notion-docs.js')}`, {
+    cwd: SCRIPTS_DIR,
+    env: {
+      ...process.env,
+      NOTION_TECHNICAL_ROOT_ID: rootId,
+      SKIP_PAGE_IDS: process.env.SKIP_TECHNICAL_PAGE_IDS || '',
+      REPO_ROOT: path.resolve(SCRIPTS_DIR, '../..'),
     },
-    {
-      "type": "create",
-      "parent_id": "id",
-      "title": "New Page Title",
-      "content": "Page content written as living documentation",
-      "links_to": ["related-page-id"]
-    },
-    {
-      "type": "crosslink",
-      "page_id": "id",
-      "page_title": "title",
-      "note": "What changed and why this section should know"
-    }
-  ]
-}`;
+    stdio: 'inherit',
+  });
 
-  console.log('');
-  console.log(chalk.cyan('Asking Claude to assess documentation impact…'));
-  console.log(chalk.dim(`  Prompt: ${Math.round(prompt.length / 1024)}KB, ${existingPages.length} pages, diff ${Math.round(diff.length / 1024)}KB`));
+  // Read fetched docs
+  let docsIndex = [];
+  if (fs.existsSync(DOCS_INDEX_PATH)) {
+    docsIndex = JSON.parse(fs.readFileSync(DOCS_INDEX_PATH, 'utf8'));
+  }
+  console.log(`  ${chalk.bold(docsIndex.length)} pages fetched`);
 
-  const MAX_RETRIES = 3;
-  let result;
-  let usage;
-  let aiElapsed;
-  let messages = [{ role: 'user', content: prompt }];
-
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    const aiStart = Date.now();
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 16384,
-      messages,
-    });
-
-    usage = response.usage;
-    aiElapsed = Math.round((Date.now() - aiStart) / 1000);
-    console.log(`  Responded in ${chalk.bold(`${aiElapsed}s`)} ${chalk.dim(`— ${usage.input_tokens} in, ${usage.output_tokens} out`)}`);
-
-    if (response.stop_reason === 'max_tokens') {
-      console.warn(chalk.yellow(`  ⚠ Response truncated (hit max_tokens) — attempt ${attempt}/${MAX_RETRIES}`));
-      if (attempt < MAX_RETRIES) {
-        console.log(chalk.dim('  Retrying…'));
-        messages = [{ role: 'user', content: prompt }];
-        continue;
-      }
-      throw new Error('Claude response truncated (max_tokens) after all retries');
-    }
-
-    const rawText = response.content[0].text;
-    try {
-      const raw = rawText.replace(/```json|```/g, '').trim();
-      result = JSON.parse(raw);
-      break;
-    } catch (err) {
-      console.error(chalk.red(`  Parse error (attempt ${attempt}/${MAX_RETRIES}):`), rawText.slice(0, 500));
-      if (attempt < MAX_RETRIES) {
-        console.log(chalk.dim('  Retrying with error feedback…'));
-        messages = [
-          { role: 'user', content: prompt },
-          { role: 'assistant', content: rawText },
-          { role: 'user', content: `Your previous response was invalid JSON. Error: ${err.message}\nPlease respond again with ONLY valid JSON matching the required schema. Ensure all strings are properly escaped and the JSON is complete.` },
-        ];
-        continue;
-      }
-      throw new Error(`JSON parse error after ${MAX_RETRIES} attempts: ${err.message}`);
+  // Build docs bundle (same format as rebuild)
+  let docsBundle = '';
+  for (const doc of docsIndex) {
+    const filePath = path.resolve(SCRIPTS_DIR, '../..', doc.file);
+    if (fs.existsSync(filePath)) {
+      const content = fs.readFileSync(filePath, 'utf8');
+      docsBundle += `\n---\n\n- "${doc.title}" (${doc.path}) [${doc.id}]\n\n${content}\n`;
     }
   }
+  console.log(chalk.dim(`  Docs bundle: ${Math.round(docsBundle.length / 1024)}KB`));
 
-  console.log(`  Meaningful: ${result.meaningful ? chalk.green('yes') : chalk.yellow('no')}`);
-  console.log(`  Reasoning:  ${chalk.italic(result.reasoning)}`);
+  // Phase 1: Assess
+  console.log('');
+  const plan = await assess(docsBundle, diff);
 
-  if (!result.meaningful || !result.actions?.length) {
+  if (!plan || !plan.meaningful || !plan.actions?.length) {
     console.log(chalk.dim('\nNo documentation updates needed.'));
     return;
   }
 
-  // Validate page_ids against the fetched tree to catch hallucinated IDs
-  const validIds = new Set(existingPages.map((p) => p.id));
+  // Validate page IDs against fetched tree
+  const validIds = new Set(docsIndex.map((d) => d.id));
   validIds.add(rootId);
 
-  console.log('');
-  console.log(chalk.cyan(`Executing ${result.actions.length} action(s)…`));
-
-  const log = [];
-
-  for (const action of result.actions) {
-    const label = action.page_title || action.title;
-
-    // Validate page_id / parent_id exists in the tree
+  const validActions = plan.actions.filter((action) => {
     const targetId = action.page_id || action.parent_id;
     if (targetId && !validIds.has(targetId)) {
-      console.warn(chalk.yellow(`  ⚠ Skipping ${action.type} on "${label}": page_id ${targetId} not found in Notion tree`));
-      log.push({ status: 'warn', type: action.type, page: label, id: targetId, detail: 'Invalid page_id — not in tree' });
-      continue;
+      console.warn(chalk.yellow(`  ⚠ Skipping ${action.type} on "${action.page_title}": page_id ${targetId} not found in Notion tree`));
+      return false;
     }
+    return true;
+  });
 
-    try {
-      switch (action.type) {
-        case 'rewrite':
-          if (!action.content) throw new Error('Missing content for rewrite action');
-          await rewritePage(action.page_id, action.content);
-          log.push({
-            status: 'ok',
-            type: action.type,
-            page: label,
-            id: action.page_id,
-            detail: `${action.content.length} chars`,
-          });
-          break;
-        case 'create': {
-          if (!action.content) throw new Error('Missing content for create action');
-          const newId = await createPage(action.parent_id, action.title, action.content, action.links_to || []);
-          log.push({ status: 'ok', type: action.type, page: label, id: newId, detail: `parent: ${action.parent_id}` });
-          break;
-        }
-        case 'crosslink':
-          await crosslinkPage(action.page_id, action.note);
-          log.push({
-            status: 'ok',
-            type: action.type,
-            page: label,
-            id: action.page_id,
-            detail: action.note.slice(0, 120),
-          });
-          break;
-        default:
-          log.push({ status: 'warn', type: action.type, page: label, id: '—', detail: 'Unknown action type' });
-          continue;
-      }
-      console.log(`  ${chalk.green('✓')} ${chalk.bold(action.type)} "${label}"`);
-    } catch (err) {
-      log.push({
-        status: 'error',
-        type: action.type,
-        page: label,
-        id: action.page_id || action.parent_id,
-        detail: err.message,
-      });
-      console.log(`  ${chalk.red('✗')} ${chalk.bold(action.type)} "${label}" — ${chalk.red(err.message)}`);
-    }
+  if (!validActions.length) {
+    console.log(chalk.dim('\nAll actions had invalid page IDs — nothing to do.'));
+    return;
   }
+
+  // Phase 2: Generate
+  const { contentResults, crosslinks } = await generate(validActions, docsIndex, diff);
+
+  // Phase 3: Write to Notion
+  console.log('');
+  console.log(chalk.cyan('Phase 3: Write to Notion'));
+  const writeLog = writeToNotion(validActions, contentResults, crosslinks);
 
   // Summary
   const elapsed = Math.round((Date.now() - startTime) / 1000);
-  const succeeded = log.filter((e) => e.status === 'ok').length;
-  const failed = log.filter((e) => e.status === 'error').length;
-  const skipped = log.filter((e) => e.status === 'warn').length;
+  const succeeded = writeLog.filter((e) => e.status === 'ok').length;
+  const failed = writeLog.filter((e) => e.status === 'error').length;
+  const skipped = writeLog.filter((e) => e.status === 'skipped').length;
 
   console.log('');
   console.log(separator());
   console.log(chalk.bold('SYNC SUMMARY'));
   console.log(separator());
   console.log(label('Change:   ', `${prRef()}: ${process.env.PR_TITLE}`));
-  console.log(label('Reasoning:', chalk.italic(result.reasoning)));
+  console.log(label('Reasoning:', chalk.italic(plan.reasoning)));
   console.log(label('Actions:  ', [
     succeeded && chalk.green(`${succeeded} succeeded`),
     failed && chalk.red(`${failed} failed`),
     skipped && chalk.yellow(`${skipped} skipped`),
   ].filter(Boolean).join(', ')));
-  console.log(label('Tokens:   ', chalk.dim(`${usage.input_tokens} in, ${usage.output_tokens} out`)));
-  console.log(label('Duration: ', `${elapsed}s ${chalk.dim(`(AI: ${aiElapsed}s)`)}`));
+  console.log(label('Duration: ', `${elapsed}s`));
   console.log('');
-  for (const entry of log) {
+  for (const entry of writeLog) {
     const icon = entry.status === 'ok' ? chalk.green('✓') : entry.status === 'error' ? chalk.red('✗') : chalk.yellow('⚠');
-    console.log(`  ${icon} ${chalk.bold(entry.type.padEnd(10))} "${entry.page}" ${chalk.dim(`[${entry.id}]`)}`);
+    console.log(`  ${icon} ${chalk.bold((entry.type || '').padEnd(10))} "${entry.page}" ${chalk.dim(entry.id ? `[${entry.id}]` : '')}`);
     console.log(`    ${chalk.dim(entry.detail)}`);
   }
   console.log(separator());
