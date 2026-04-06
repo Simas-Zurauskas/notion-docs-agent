@@ -1,11 +1,11 @@
 # yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
-name: "Knowledge Base: Sync"
+name: "Knowledge Base: Sync Product"
 
 on:
   workflow_call:
 
 jobs:
-  sync-to-notion:
+  sync-product:
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -59,22 +59,6 @@ jobs:
       - name: Install sync dependencies
         working-directory: .ci-scripts/scripts
         run: npm install
-
-      - name: Sync technical documentation
-        working-directory: .ci-scripts/scripts
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
-          NOTION_TECHNICAL_ROOT_ID: ${{ secrets.NOTION_TECHNICAL_ROOT_ID }}
-          SKIP_TECHNICAL_PAGE_IDS: ${{ secrets.SKIP_TECHNICAL_PAGE_IDS }}
-          PR_TITLE: ${{ steps.pr_info.outputs.pr_title }}
-          PR_AUTHOR: ${{ steps.pr_info.outputs.pr_author }}
-          PR_BODY: ${{ steps.pr_info.outputs.pr_body }}
-          CHANGED_FILES: ${{ steps.pr_info.outputs.changed_files }}
-          PR_NUMBER: ${{ steps.pr_info.outputs.pr_number }}
-          REPO_NAME: ${{ github.repository }}
-          REPO_LABEL: ${{ github.event.repository.name }}
-        run: node notion-sync-technical.js
 
       - name: Sync product documentation
         working-directory: .ci-scripts/scripts
