@@ -102,7 +102,7 @@ For each action, write detailed instructions explaining:
 - What the content writer should emphasize (remember: NO code references in output)`;
 }
 
-async function assess(docsOutline, diff) {
+async function assess(docsOutline, diff, docsIndex = []) {
   const phaseStart = Date.now();
   console.log(chalk.magenta('Phase 1: Assess'));
 
@@ -121,8 +121,10 @@ async function assess(docsOutline, diff) {
   console.log(`  Reasoning:  ${chalk.italic(plan.reasoning)}`);
 
   if (plan.meaningful && plan.actions?.length) {
+    const titleById = new Map(docsIndex.map((d) => [d.id, d.title]));
     for (const a of plan.actions) {
-      console.log(`    ${chalk.bold(a.type.padEnd(10))} ${chalk.magenta(a.page_title || a.page_id || '(new)')}`);
+      const pageLabel = a.page_title || titleById.get(a.page_id) || a.page_id || '(new)';
+      console.log(`    ${chalk.bold(a.type.padEnd(10))} ${chalk.magenta(pageLabel)}`);
       console.log(chalk.dim(`       ${a.instructions.slice(0, 120)}${a.instructions.length > 120 ? '…' : ''}`));
     }
   }
@@ -274,7 +276,7 @@ async function main() {
 
   // Phase 1: Assess
   console.log('');
-  const plan = await assess(docsOutline, diff);
+  const plan = await assess(docsOutline, diff, docsIndex);
 
   if (!plan || !plan.meaningful || !plan.actions?.length) {
     console.log(chalk.dim('\nNo product documentation updates needed.'));

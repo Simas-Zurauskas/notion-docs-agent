@@ -34,6 +34,31 @@ function sanitizeMarkdownLinks(markdown) {
 }
 
 // ---------------------------------------------------------------------------
+// Block post-processing — fix table rows with mismatched cell counts
+// ---------------------------------------------------------------------------
+
+function normalizeTableBlocks(blocks) {
+  for (const block of blocks) {
+    if (block.type === 'table' && block.table?.children) {
+      const width = block.table.table_width;
+      for (const row of block.table.children) {
+        if (row.type !== 'table_row') continue;
+        const cells = row.table_row.cells;
+        // Trim extra cells
+        if (cells.length > width) {
+          cells.length = width;
+        }
+        // Pad missing cells with empty rich text
+        while (cells.length < width) {
+          cells.push([{ type: 'text', text: { content: '' } }]);
+        }
+      }
+    }
+  }
+  return blocks;
+}
+
+// ---------------------------------------------------------------------------
 // Notion operations
 // ---------------------------------------------------------------------------
 
@@ -78,7 +103,7 @@ async function appendBlocks(pageId, blocks) {
 
 async function rewritePage(pageId, markdownFile) {
   const markdown = sanitizeMarkdownLinks(fs.readFileSync(markdownFile, 'utf8'));
-  const newBlocks = markdownToBlocks(markdown);
+  const newBlocks = normalizeTableBlocks(markdownToBlocks(markdown));
 
   // 1. Collect existing content block IDs (never touch child pages or databases)
   const oldBlockIds = [];
@@ -113,14 +138,14 @@ async function rewritePage(pageId, markdownFile) {
 
 async function appendToPage(pageId, markdownFile) {
   const markdown = sanitizeMarkdownLinks(fs.readFileSync(markdownFile, 'utf8'));
-  const blocks = markdownToBlocks(markdown);
+  const blocks = normalizeTableBlocks(markdownToBlocks(markdown));
   await appendBlocks(pageId, blocks);
   console.log(`${chalk.green('✓')} Appended to page ${chalk.dim(pageId)} ${chalk.dim(`(${blocks.length} blocks)`)}`);
 }
 
 async function createPage(parentId, title, markdownFile) {
   const markdown = sanitizeMarkdownLinks(fs.readFileSync(markdownFile, 'utf8'));
-  const blocks = markdownToBlocks(markdown);
+  const blocks = normalizeTableBlocks(markdownToBlocks(markdown));
 
   // Notion limits children in create to 100
   const initialBlocks = blocks.slice(0, 100);
