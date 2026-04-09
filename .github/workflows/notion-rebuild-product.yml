@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: 'Knowledge Base: Rebuild Product'
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      FORCE_COLOR: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Simas-Zurauskas/strive2-ci
+          path: .ci-scripts
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        working-directory: .ci-scripts/scripts
+        run: npm install
+
+      - name: Rebuild product documentation
+        working-directory: .ci-scripts/scripts
+        env:
+          REPO_ROOT: ${{ github.workspace }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_PRODUCT_ROOT_ID: ${{ secrets.NOTION_PRODUCT_ROOT_ID }}
+          SKIP_PRODUCT_PAGE_IDS: ${{ secrets.SKIP_PRODUCT_PAGE_IDS }}
+        run: node rebuild-docs-product.js

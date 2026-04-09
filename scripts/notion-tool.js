@@ -221,7 +221,7 @@ async function main() {
       break;
 
     default:
-      console.error(chalk.red(`Unknown command: ${command}`));
+      console.error(chalk.red(`${'✗'} Unknown command: ${command}`));
       console.error(chalk.dim('Commands: list, rewrite, append, create, delete, rename'));
       process.exit(1);
   }

@@ -1,6 +1,7 @@
 const fs = require('fs');
 const { execSync } = require('child_process');
 const chalk = require('chalk');
+const { indent } = require('./log-helpers');
 
 /**
  * Write results to Notion via notion-tool.js CLI.
@@ -27,13 +28,13 @@ function writeResults({ actions, results, crosslinks = [], notionToolPath, metaF
 
     if (result.skipped) {
       writeLog.push({ status: 'skipped', type: action.type, page: pageLabel, detail: result.skip_reason });
-      console.log(`    ${chalk.yellow('○')} ${pageLabel}: ${chalk.yellow(`skipped — ${result.skip_reason}`)}`);
+      console.log(`${indent.L2}${chalk.yellow('○')} ${pageLabel}: ${chalk.yellow(`skipped — ${result.skip_reason}`)}`);
       continue;
     }
 
     if (!result.markdown?.trim()) {
       writeLog.push({ status: 'skipped', type: action.type, page: pageLabel, detail: 'Empty markdown' });
-      console.log(`    ${chalk.yellow('○')} ${pageLabel}: ${chalk.yellow('skipped — empty markdown')}`);
+      console.log(`${indent.L2}${chalk.yellow('○')} ${pageLabel}: ${chalk.yellow('skipped — empty markdown')}`);
       continue;
     }
 
@@ -56,10 +57,10 @@ function writeResults({ actions, results, crosslinks = [], notionToolPath, metaF
           break;
         }
       }
-      console.log(`    ${chalk.green('✓')} ${chalk.bold(action.type)} "${pageLabel}"`);
+      console.log(`${indent.L2}${chalk.green('✓')} ${chalk.bold(action.type)} "${pageLabel}"`);
     } catch (err) {
       writeLog.push({ status: 'error', type: action.type, page: pageLabel, id: action.page_id || action.parent_id, detail: err.message });
-      console.log(`    ${chalk.red('✗')} ${chalk.bold(action.type)} "${pageLabel}" — ${chalk.red(err.message)}`);
+      console.log(`${indent.L2}${chalk.red('✗')} ${chalk.bold(action.type)} "${pageLabel}" — ${chalk.red(err.message)}`);
     }
   }
 
@@ -73,10 +74,10 @@ function writeResults({ actions, results, crosslinks = [], notionToolPath, metaF
     try {
       execSync(`${tool} append ${action.page_id} ${tmpFile}`, { env, encoding: 'utf8', stdio: 'pipe' });
       writeLog.push({ status: 'ok', type: 'crosslink', page: action.page_title, id: action.page_id, detail: action.instructions.slice(0, 120) });
-      console.log(`    ${chalk.green('✓')} ${chalk.bold('crosslink')} "${action.page_title}"`);
+      console.log(`${indent.L2}${chalk.green('✓')} ${chalk.bold('crosslink')} "${action.page_title}"`);
     } catch (err) {
       writeLog.push({ status: 'error', type: 'crosslink', page: action.page_title, id: action.page_id, detail: err.message });
-      console.log(`    ${chalk.red('✗')} ${chalk.bold('crosslink')} "${action.page_title}" — ${chalk.red(err.message)}`);
+      console.log(`${indent.L2}${chalk.red('✗')} ${chalk.bold('crosslink')} "${action.page_title}" — ${chalk.red(err.message)}`);
     }
   }
 

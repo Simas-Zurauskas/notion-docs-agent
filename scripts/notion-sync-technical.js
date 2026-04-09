@@ -3,7 +3,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 const chalk = require('chalk');
 const DOC_STANDARDS = require('./doc-standards-technical');
-const { label, separator, prRef, changeMeta } = require('./lib/log-helpers');
+const { indent, label, separator, phaseHeader, summaryHeader, phaseTiming, prRef, changeMeta } = require('./lib/log-helpers');
 const { invokeAgent } = require('./lib/agent');
 const { loadDocsIndex, buildDocsOutline, loadPageContent } = require('./lib/docs');
 const { assessSchema, GENERATE_SCHEMA } = require('./lib/schemas');
@@ -102,31 +102,33 @@ For each action, write detailed instructions explaining:
 
 async function assess(docsOutline, diff, docsIndex = []) {
   const phaseStart = Date.now();
-  console.log(chalk.cyan('Phase 1: Assess'));
+  console.log(phaseHeader('Phase 1: Assess'));
 
   const prompt = buildAssessPrompt(docsOutline, diff);
-  console.log(chalk.dim(`  Prompt: ${Math.round(prompt.length / 1024)}KB`));
+  console.log(chalk.dim(`${indent.L1}Prompt: ${Math.round(prompt.length / 1024)}KB`));
 
-  const plan = await invokeAgent({ prompt, schema: ASSESS_SCHEMA, maxTurns: 8 });
-  const elapsed = Math.round((Date.now() - phaseStart) / 1000);
+  const plan = await invokeAgent({ prompt, schema: ASSESS_SCHEMA, maxTurns: 8, label: 'Assessor' });
+  const elapsed = Date.now() - phaseStart;
 
   if (!plan) {
-    console.log(chalk.yellow(`  No response from assessor ${chalk.dim(`(${elapsed}s)`)}`));
+    console.log(chalk.yellow(`${indent.L1}No response from assessor`));
+    console.log(phaseTiming('Phase 1', elapsed));
     return null;
   }
 
-  console.log(`  Meaningful: ${plan.meaningful ? chalk.green('yes') : chalk.yellow('no')} ${chalk.dim(`(${elapsed}s)`)}`);
-  console.log(`  Reasoning:  ${chalk.italic(plan.reasoning)}`);
+  console.log(`${indent.L1}Meaningful: ${plan.meaningful ? chalk.green('yes') : chalk.yellow('no')}`);
+  console.log(`${indent.L1}Reasoning:  ${chalk.italic(plan.reasoning)}`);
 
   if (plan.meaningful && plan.actions?.length) {
     const titleById = new Map(docsIndex.map((d) => [d.id, d.title]));
     for (const a of plan.actions) {
       const pageLabel = a.page_title || titleById.get(a.page_id) || a.page_id || '(new)';
-      console.log(`    ${chalk.bold(a.type.padEnd(10))} ${chalk.cyan(pageLabel)}`);
-      console.log(chalk.dim(`       ${a.instructions.slice(0, 120)}${a.instructions.length > 120 ? '…' : ''}`));
+      console.log(`${indent.L2}${chalk.bold(a.type.padEnd(10))} ${chalk.cyan(pageLabel)}`);
+      console.log(chalk.dim(`${indent.L3}${a.instructions.slice(0, 120)}${a.instructions.length > 120 ? '…' : ''}`));
     }
   }
 
+  console.log(phaseTiming('Phase 1', elapsed));
   return plan;
 }
 
@@ -176,7 +178,7 @@ set skipped to true with a skip_reason.`;
 async function runWorker(action, pageContent, diff) {
   try {
     const prompt = buildWorkerPrompt(action, pageContent, diff);
-    const result = await invokeAgent({ prompt, schema: GENERATE_SCHEMA, maxTurns: 5 });
+    const result = await invokeAgent({ prompt, schema: GENERATE_SCHEMA, maxTurns: 5, label: `Writer: ${action.page_title || action.type}` });
     if (!result) {
       return { page_title: action.page_title || '', markdown: '', summary: 'Worker produced no output', skipped: true, skip_reason: 'No structured output returned' };
     }
@@ -188,8 +190,7 @@ async function runWorker(action, pageContent, diff) {
 
 async function generate(actions, docsIndex, diff) {
   const phaseStart = Date.now();
-  console.log('');
-  console.log(chalk.cyan('Phase 2: Generate'));
+  console.log(phaseHeader('Phase 2: Generate'));
 
   const contentActions = actions.filter((a) => a.type !== 'crosslink');
   const crosslinks = actions.filter((a) => a.type === 'crosslink');
@@ -200,7 +201,7 @@ async function generate(actions, docsIndex, diff) {
   const results = [];
   for (let i = 0; i < contentActions.length; i += CONCURRENCY) {
     const batch = contentActions.slice(i, i + CONCURRENCY);
-    console.log(chalk.dim(`  Batch ${Math.floor(i / CONCURRENCY) + 1}: ${batch.map((a) => a.page_title || a.type).join(', ')}`));
+    console.log(chalk.dim(`${indent.L1}Batch ${Math.floor(i / CONCURRENCY) + 1}: ${batch.map((a) => a.page_title || a.type).join(', ')}`));
     const batchStart = Date.now();
 
     const batchResults = await Promise.all(
@@ -215,14 +216,13 @@ async function generate(actions, docsIndex, diff) {
       const icon = r.skipped ? chalk.yellow('○') : chalk.green('✓');
       const status = r.skipped ? chalk.yellow(`skipped (${r.skip_reason})`) : r.summary;
       const mdLen = r.markdown ? `${Math.round(r.markdown.length / 1024)}KB` : '0KB';
-      console.log(`    ${icon} ${r.page_title}: ${status} ${chalk.dim(`[${mdLen}]`)}`);
+      console.log(`${indent.L2}${icon} ${r.page_title}: ${status} ${chalk.dim(`[${mdLen}]`)}`);
     }
-    console.log(chalk.dim(`    Batch completed in ${batchElapsed}s`));
+    console.log(chalk.dim(`${indent.L2}Batch completed in ${batchElapsed}s`));
     results.push(...batchResults);
   }
 
-  const elapsed = Math.round((Date.now() - phaseStart) / 1000);
-  console.log(chalk.dim(`  Phase 2 completed in ${elapsed}s`));
+  console.log(phaseTiming('Phase 2', Date.now() - phaseStart));
 
   return { contentResults: results, crosslinks };
 }
@@ -247,10 +247,10 @@ async function main() {
   console.log(label('Author:    ', process.env.PR_AUTHOR));
   console.log(label('Changed:   ', `${changedFiles.length} files, ${Math.round(diff.length / 1024)}KB diff`));
   if (changedFiles.length <= 15) {
-    for (const f of changedFiles) console.log(chalk.dim(`    ${f}`));
+    for (const f of changedFiles) console.log(chalk.dim(`${indent.L2}${f}`));
   } else {
-    for (const f of changedFiles.slice(0, 10)) console.log(chalk.dim(`    ${f}`));
-    console.log(chalk.dim(`    … and ${changedFiles.length - 10} more`));
+    for (const f of changedFiles.slice(0, 10)) console.log(chalk.dim(`${indent.L2}${f}`));
+    console.log(chalk.dim(`${indent.L2}… and ${changedFiles.length - 10} more`));
   }
   console.log('');
 
@@ -263,10 +263,10 @@ async function main() {
   });
 
   const docsIndex = loadDocsIndex(DOCS_INDEX_PATH);
-  console.log(`  ${chalk.bold(docsIndex.length)} pages fetched`);
+  console.log(`${indent.L1}${chalk.bold(docsIndex.length)} pages fetched`);
 
   const docsOutline = buildDocsOutline(docsIndex, REPO_ROOT);
-  console.log(chalk.dim(`  Docs outline: ${Math.round(docsOutline.length / 1024)}KB (headings only)`));
+  console.log(chalk.dim(`${indent.L1}Docs outline: ${Math.round(docsOutline.length / 1024)}KB (headings only)`));
 
   // Phase 1: Assess
   console.log('');
@@ -284,7 +284,7 @@ async function main() {
   const validActions = plan.actions.filter((action) => {
     const targetId = action.page_id || action.parent_id;
     if (targetId && !validIds.has(targetId)) {
-      console.warn(chalk.yellow(`  ⚠ Skipping ${action.type} on "${action.page_title}": page_id ${targetId} not found in Notion tree`));
+      console.warn(chalk.yellow(`${indent.L1}⚠ Skipping ${action.type} on "${action.page_title}": page_id ${targetId} not found in Notion tree`));
       return false;
     }
     return true;
@@ -299,8 +299,8 @@ async function main() {
   const { contentResults, crosslinks } = await generate(validActions, docsIndex, diff);
 
   // Phase 3: Write to Notion
-  console.log('');
-  console.log(chalk.cyan('Phase 3: Write to Notion'));
+  const phase3Start = Date.now();
+  console.log(phaseHeader('Phase 3: Write to Notion'));
   const writeLog = writeResults({
     actions: validActions,
     results: contentResults,
@@ -308,6 +308,7 @@ async function main() {
     notionToolPath: NOTION_TOOL,
     metaFn: (type) => type === 'create' ? `Created: ${changeMeta()}` : `Rewritten: ${changeMeta()}`,
   });
+  console.log(phaseTiming('Phase 3', Date.now() - phase3Start));
 
   // Summary
   const elapsed = Math.round((Date.now() - startTime) / 1000);
@@ -315,10 +316,7 @@ async function main() {
   const failed = writeLog.filter((e) => e.status === 'error').length;
   const skipped = writeLog.filter((e) => e.status === 'skipped').length;
 
-  console.log('');
-  console.log(separator());
-  console.log(chalk.bold('SYNC SUMMARY'));
-  console.log(separator());
+  console.log(summaryHeader('SYNC SUMMARY'));
   console.log(label('Change:   ', `${prRef()}: ${process.env.PR_TITLE}`));
   console.log(label('Reasoning:', chalk.italic(plan.reasoning)));
   console.log(label('Actions:  ', [
@@ -330,8 +328,8 @@ async function main() {
   console.log('');
   for (const entry of writeLog) {
     const icon = entry.status === 'ok' ? chalk.green('✓') : entry.status === 'error' ? chalk.red('✗') : chalk.yellow('⚠');
-    console.log(`  ${icon} ${chalk.bold((entry.type || '').padEnd(10))} "${entry.page}" ${chalk.dim(entry.id ? `[${entry.id}]` : '')}`);
-    console.log(`    ${chalk.dim(entry.detail)}`);
+    console.log(`${indent.L1}${icon} ${chalk.bold((entry.type || '').padEnd(10))} "${entry.page}" ${chalk.dim(entry.id ? `[${entry.id}]` : '')}`);
+    console.log(`${indent.L2}${chalk.dim(entry.detail)}`);
   }
   console.log(separator());
 }

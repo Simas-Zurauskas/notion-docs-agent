@@ -2,6 +2,7 @@ const { Client } = require('@notionhq/client');
 const fs = require('fs');
 const path = require('path');
 const chalk = require('chalk');
+const { indent } = require('./lib/log-helpers');
 
 const notion = new Client({ auth: process.env.NOTION_API_KEY });
 const DOCS_DIR = process.env.REPO_ROOT
@@ -15,8 +16,8 @@ const SKIP_TECHNICAL_PAGE_IDS = new Set(
   (process.env.SKIP_TECHNICAL_PAGE_IDS?.split(',') || []).map((id) => id.replace(/-/g, ''))
 );
 
-if (SKIP_TECHNICAL_PAGE_IDS.size) console.log(chalk.dim(`  Skipping page IDs: ${[...SKIP_TECHNICAL_PAGE_IDS].join(', ')}`));
-else console.warn(chalk.yellow('  ⚠ SKIP_TECHNICAL_PAGE_IDS is empty — all pages will be fetched'));
+if (SKIP_TECHNICAL_PAGE_IDS.size) console.log(chalk.dim(`${indent.L1}Skipping page IDs: ${[...SKIP_TECHNICAL_PAGE_IDS].join(', ')}`));
+else console.warn(chalk.yellow(`${indent.L1}${'⚠'} SKIP_TECHNICAL_PAGE_IDS is empty — all pages will be fetched`));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -188,9 +189,9 @@ async function main() {
   if (fs.existsSync(DOCS_DIR)) fs.rmSync(DOCS_DIR, { recursive: true });
   fs.mkdirSync(DOCS_DIR, { recursive: true });
 
-  console.log(chalk.cyan('  Fetching Notion page tree…'));
+  console.log(chalk.cyan(`${indent.L1}Fetching Notion page tree…`));
   const pages = await fetchPageTree(rootId);
-  console.log(`  Found ${chalk.bold(pages.length)} pages`);
+  console.log(`${indent.L1}Found ${chalk.bold(pages.length)} pages`);
 
   const manifest = [];
   let totalSize = 0;
@@ -215,9 +216,9 @@ async function main() {
         path: page.path,
         file: path.relative(path.resolve(__dirname, '../..'), filePath),
       });
-      console.log(`    ${chalk.green('✓')} ${chalk.cyan(page.title)} ${chalk.dim(`(${Math.round(content.length / 1024)}KB)`)}`);
+      console.log(`${indent.L2}${chalk.green('✓')} ${chalk.cyan(page.title)} ${chalk.dim(`(${Math.round(content.length / 1024)}KB)`)}`);
     } catch (err) {
-      console.warn(`    ${chalk.red('✗')} ${page.title} — ${chalk.red(err.message)}`);
+      console.warn(`${indent.L2}${chalk.red('✗')} ${page.title} — ${chalk.red(err.message)}`);
     }
   }
 
@@ -226,10 +227,10 @@ async function main() {
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 
   const elapsed = Math.round((Date.now() - startTime) / 1000);
-  console.log(`\n  Wrote ${chalk.bold(manifest.length)} pages ${chalk.dim(`(${Math.round(totalSize / 1024)}KB total, ${elapsed}s)`)}`);
+  console.log(`\n${indent.L1}Wrote ${chalk.bold(manifest.length)} pages ${chalk.dim(`(${Math.round(totalSize / 1024)}KB total, ${elapsed}s)`)}`);
 }
 
 main().catch((err) => {
-  console.error(chalk.red.bold('  Fetch failed:'), err.message);
+  console.error(chalk.red.bold(`${indent.L1}Fetch failed:`), err.message);
   process.exit(1);
 });

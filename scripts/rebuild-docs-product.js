@@ -1,21 +1,22 @@
 /**
- * rebuild-docs.js — Multi-agent documentation engine.
+ * rebuild-docs-product.js — Multi-agent documentation engine for product pages.
  *
- * Orchestrates parallel Claude agents to audit and rebuild Notion documentation:
+ * Orchestrates parallel Claude agents to audit and rebuild "How Strive Works"
+ * Notion documentation (product-level, no code references):
  *   Phase A: Prepare — fetch docs, generate manifest, build outline
  *   Phase B: Plan   — orchestrator agent produces structured task plan
  *   Phase C: Execute — worker agents read source files & write markdown in parallel,
  *                      then sequential Notion write pass applies changes
  *
  * Usage:
- *   ANTHROPIC_API_KEY=... NOTION_API_KEY=... NOTION_TECHNICAL_ROOT_ID=... node rebuild-docs.js
+ *   ANTHROPIC_API_KEY=... NOTION_API_KEY=... NOTION_PRODUCT_ROOT_ID=... node rebuild-docs-product.js
  */
 
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const chalk = require('chalk');
-const DOC_STANDARDS = require('./doc-standards-technical');
+const DOC_STANDARDS = require('./doc-standards-product');
 const { indent, label, separator, phaseHeader, summaryHeader, phaseTiming } = require('./lib/log-helpers');
 const { invokeAgent } = require('./lib/agent');
 const { loadDocsIndex, buildDocsOutline } = require('./lib/docs');
@@ -28,6 +29,7 @@ const NOTION_TOOL = path.join(SCRIPTS_DIR, 'notion-tool.js');
 
 const CONCURRENCY = 5;
 const WORKER_MAX_TURNS = 30;
+const THEME = chalk.bold.magenta;
 
 // ---------------------------------------------------------------------------
 // Phase A: Prepare
@@ -62,7 +64,7 @@ function generateManifest() {
 
 async function prepare() {
   const phaseStart = Date.now();
-  console.log(phaseHeader('Phase A: Prepare'));
+  console.log(phaseHeader('Phase A: Prepare', THEME));
   console.log(label('Repo root:', chalk.dim(REPO_ROOT)));
 
   // 1. Fetch Notion docs
@@ -100,7 +102,7 @@ async function prepare() {
 // ---------------------------------------------------------------------------
 
 function buildOrchestratorPrompt(manifest, docsOutline, docsIndex) {
-  return `You are a documentation planning agent for the Strive learning platform.
+  return `You are a product documentation planning agent for Strive, an AI-powered learning platform.
 
 ## Your job
 
@@ -108,7 +110,15 @@ Analyze the codebase file listing and existing documentation outline, then produ
 structured plan. Each task in your plan will be executed by an independent worker agent
 that has access to the full codebase via Read, Glob, and Grep tools.
 
+You manage the "How Strive Works" section — product-level documentation that explains
+what the platform does, how features work, and the business logic behind them.
+These pages are read by everyone: developers, product managers, and leadership.
+
 ${DOC_STANDARDS.DOCUMENTATION_PHILOSOPHY}
+
+CRITICAL: All documentation must contain ZERO code references. No file paths, no function
+names, no API endpoints, no schema fields, no inline code backticks. Workers will read
+the code but must describe everything in plain language.
 
 ## Determine the documentation state
 
@@ -124,12 +134,11 @@ ${DOC_STANDARDS.DOCUMENTATION_PHILOSOPHY}
   and drift. Produce complete page content with changes integrated.
 - For 'rewrite': include page_id and current_doc_file from the docs index
 - For 'create': MUST include parent_id and title. Use the page ID of the parent page
-  from the docs index — NOT the technical root ID. Sub-pages go under their parent.
-  For example, an "Architecture" page about the API should have the API page's ID as
-  parent_id. Only use the technical root ID for genuinely top-level pages.
+  from the docs index — NOT the product root ID. Sub-pages go under their parent.
 - For 'delete': include page_id — only for pages documenting removed features
 - For 'split': create separate child tasks (action: 'create') and one parent task
   (action: 'rewrite') that depends_on the children
+- STRONGLY prefer rewriting existing pages over creating new ones.
 
 ## Instructions field
 
@@ -138,11 +147,15 @@ Be specific about WHAT to document and WHAT to verify. The worker has Read, Glob
 and Grep tools and will explore the codebase itself to find the relevant files.
 You do NOT need to specify file paths — the worker will discover them.
 
-Good: "Document all custom hooks in src/hooks/. For each hook, cover its signature,
-return type, dependencies, and usage patterns. Verify the useAuth hook's token
-management against the actual NextAuth config."
+CRITICAL: Remind workers in every task instruction that output must contain NO code
+references — no file paths, function names, endpoints, schema fields, or backticks.
+Everything must be described in plain language.
 
-Bad: "Update the hooks page."
+Good: "Document the course creation flow from the user's perspective. Cover what happens
+at each step of the wizard, what the user sees, and how AI generates the course structure.
+Verify the current number of wizard steps and what each collects. NO code references."
+
+Bad: "Update the course creation page."
 
 ${DOC_STANDARDS.PAGE_STRUCTURE}
 
@@ -159,8 +172,8 @@ ${docsOutline}
 ### DOCS INDEX (Notion page IDs and file paths)
 ${JSON.stringify(docsIndex, null, 2)}
 
-### TECHNICAL ROOT PAGE ID
-${process.env.NOTION_TECHNICAL_ROOT_ID}
+### PRODUCT ROOT PAGE ID
+${process.env.NOTION_PRODUCT_ROOT_ID}
 
 ## Output
 
@@ -171,7 +184,7 @@ Omit tasks for pages that are already accurate — only include work that needs 
 
 async function orchestrate(manifest, docsOutline, docsIndex) {
   const phaseStart = Date.now();
-  console.log(phaseHeader('Phase B: Plan'));
+  console.log(phaseHeader('Phase B: Plan', THEME));
 
   const prompt = buildOrchestratorPrompt(manifest, docsOutline, docsIndex);
   console.log(chalk.dim(`${indent.L1}Prompt: ${Math.round(prompt.length / 1024)}KB`));
@@ -222,8 +235,11 @@ function buildWorkerPrompt(task, manifest) {
     }
   }
 
-  return `You are a documentation writer for the Strive learning platform.
-You have ONE job: write complete, accurate documentation for a specific section.
+  return `You are a product documentation writer for Strive, an AI-powered learning platform.
+You have ONE job: write complete, accurate product documentation for a specific section.
+
+These pages are part of "How Strive Works" — product-level documentation read by
+everyone on the team: developers, product managers, and leadership.
 
 ## Your assignment
 
@@ -257,6 +273,15 @@ ${DOC_STANDARDS.QUALITY_CRITERIA}
 ${DOC_STANDARDS.PAGE_STRUCTURE}
 
 ${DOC_STANDARDS.LINK_STANDARDS}
+
+## CRITICAL: No Code References
+
+Your output must contain ZERO code references:
+- Never mention file paths, function names, class names, or variable names
+- Never mention API endpoints or HTTP methods
+- Never mention schema field names, database collections, or model names
+- Never use inline code backticks for technical identifiers
+- Instead, describe what happens in plain language
 
 ## Output
 
@@ -449,7 +474,7 @@ function printSummary(plan, allWriteResults, elapsed) {
   const skipped = allWriteResults.filter((r) => r.status === 'skipped').length;
   const failed = allWriteResults.filter((r) => r.status === 'error').length;
 
-  console.log(summaryHeader('REBUILD SUMMARY'));
+  console.log(summaryHeader('PRODUCT REBUILD SUMMARY'));
 
   const stateColors = { bootstrap: chalk.magenta, growth: chalk.yellow, maintenance: chalk.green };
   const stateColor = stateColors[plan.state] || chalk.white;
@@ -480,7 +505,7 @@ async function main() {
   const startTime = Date.now();
 
   console.log('');
-  console.log(chalk.bold.cyan('KNOWLEDGE BASE REBUILD'));
+  console.log(THEME('PRODUCT KNOWLEDGE BASE REBUILD'));
   console.log(separator());
 
   // Phase A
@@ -496,7 +521,7 @@ async function main() {
 
   // Phase C
   const phaseCStart = Date.now();
-  console.log(phaseHeader('Phase C: Execute'));
+  console.log(phaseHeader('Phase C: Execute', THEME));
   const { independent, dependent } = partitionTasks(plan.tasks);
 
   console.log(label('Independent:', chalk.bold(independent.length)));
@@ -529,6 +554,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(chalk.red.bold('Rebuild failed:'), err.message);
+  console.error(chalk.red.bold('Product rebuild failed:'), err.message);
   process.exit(1);
 });
