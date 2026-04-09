@@ -214,7 +214,7 @@ async function runIssuesAudit({ docType, docsIndex, docsOutline, baseDir, notion
     const result = await invokeAgent({
       prompt,
       schema: ISSUES_AUDIT_SCHEMA,
-      maxTurns: 1,
+      maxTurns: 10,
       label: 'Issues Audit',
     });
 

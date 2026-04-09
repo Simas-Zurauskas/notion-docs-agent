@@ -111,7 +111,7 @@ async function assess(docsOutline, diff, docsIndex = []) {
   const prompt = buildAssessPrompt(docsOutline, diff);
   console.log(chalk.dim(`${indent.L1}Prompt: ${Math.round(prompt.length / 1024)}KB`));
 
-  const plan = await invokeAgent({ prompt, schema: ASSESS_SCHEMA, maxTurns: 8, label: 'Assessor' });
+  const plan = await invokeAgent({ prompt, schema: ASSESS_SCHEMA, maxTurns: 10, label: 'Assessor' });
   const elapsed = Date.now() - phaseStart;
 
   if (!plan) {
@@ -190,7 +190,7 @@ set skipped to true with a skip_reason.`;
 async function runWorker(action, pageContent, diff) {
   try {
     const prompt = buildWorkerPrompt(action, pageContent, diff);
-    const result = await invokeAgent({ prompt, schema: GENERATE_SCHEMA, maxTurns: 8, label: `Writer: ${action.page_title || action.type}` });
+    const result = await invokeAgent({ prompt, schema: GENERATE_SCHEMA, maxTurns: 10, label: `Writer: ${action.page_title || action.type}` });
     if (!result) {
       return { page_title: action.page_title || '', markdown: '', summary: 'Worker produced no output', skipped: true, skip_reason: 'No structured output returned' };
     }

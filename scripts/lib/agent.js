@@ -10,7 +10,7 @@ const DEFAULT_MODEL = 'claude-sonnet-4-6';
  *
  * Pass `label` to enable compact activity logging (agent start + completion).
  */
-async function invokeAgent({ prompt, schema, model = DEFAULT_MODEL, maxTurns = 1, tools = [], cwd, label: agentLabel }) {
+async function invokeAgent({ prompt, schema, model = DEFAULT_MODEL, maxTurns = 10, tools = [], cwd, label: agentLabel }) {
   const start = Date.now();
   let turnCount = 0;
 

@@ -190,7 +190,7 @@ async function orchestrate(manifest, docsOutline, docsIndex) {
   const prompt = buildOrchestratorPrompt(manifest, docsOutline, docsIndex);
   console.log(chalk.dim(`${indent.L1}Prompt: ${Math.round(prompt.length / 1024)}KB`));
 
-  const plan = await invokeAgent({ prompt, schema: PLAN_SCHEMA, maxTurns: 8, cwd: REPO_ROOT, label: 'Orchestrator' });
+  const plan = await invokeAgent({ prompt, schema: PLAN_SCHEMA, maxTurns: 10, cwd: REPO_ROOT, label: 'Orchestrator' });
 
   if (!plan || !plan.tasks?.length) {
     console.log(chalk.dim(`${indent.L1}Orchestrator produced no tasks — documentation is up to date.`));
