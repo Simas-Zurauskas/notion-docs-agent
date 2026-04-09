@@ -67,6 +67,7 @@ jobs:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_TECHNICAL_ROOT_ID: ${{ secrets.NOTION_TECHNICAL_ROOT_ID }}
           SKIP_TECHNICAL_PAGE_IDS: ${{ secrets.SKIP_TECHNICAL_PAGE_IDS }}
+          NOTION_TECHNICAL_ISSUES_PAGE_ID: ${{ secrets.NOTION_TECHNICAL_ISSUES_PAGE_ID }}
           PR_TITLE: ${{ steps.pr_info.outputs.pr_title }}
           PR_AUTHOR: ${{ steps.pr_info.outputs.pr_author }}
           PR_BODY: ${{ steps.pr_info.outputs.pr_body }}

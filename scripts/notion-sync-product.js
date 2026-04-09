@@ -8,6 +8,7 @@ const { invokeAgent } = require('./lib/agent');
 const { loadDocsIndex, buildDocsOutline, loadPageContent } = require('./lib/docs');
 const { assessSchema, GENERATE_SCHEMA } = require('./lib/schemas');
 const { writeResults } = require('./lib/notion-writer');
+const { runIssuesAudit } = require('./lib/issues-audit');
 
 const SCRIPTS_DIR = __dirname;
 const REPO_ROOT = path.resolve(SCRIPTS_DIR, '../..');
@@ -315,6 +316,22 @@ async function main() {
     metaFn: (type) => type === 'create' ? `Created: ${changeMeta()}` : `Rewritten: ${changeMeta()}`,
   });
   console.log(phaseTiming('Phase 3', Date.now() - phase3Start));
+
+  // Phase 4: Issues Audit
+  await runIssuesAudit({
+    docType: 'product',
+    docsIndex,
+    docsOutline,
+    baseDir: REPO_ROOT,
+    notionToolPath: NOTION_TOOL,
+    repoLabel: REPO_LABEL,
+    phaseLabel: 'Phase 4',
+    runContext: {
+      trigger: 'sync',
+      summary: `${prRef()}: ${process.env.PR_TITLE} — ${writeLog.filter((e) => e.status === 'ok').length} pages written`,
+      writeLog,
+    },
+  });
 
   // Summary
   const elapsed = Math.round((Date.now() - startTime) / 1000);

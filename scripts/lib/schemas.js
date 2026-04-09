@@ -82,4 +82,23 @@ const WORKER_OUTPUT_SCHEMA = {
   required: ['task_id', 'action', 'markdown', 'summary', 'skipped'],
 };
 
-module.exports = { assessSchema, GENERATE_SCHEMA, PLAN_SCHEMA, WORKER_OUTPUT_SCHEMA };
+const ISSUES_AUDIT_SCHEMA = {
+  type: 'object',
+  properties: {
+    markdown: { type: 'string' },
+    summary: { type: 'string' },
+    stats: {
+      type: 'object',
+      properties: {
+        critical: { type: 'integer' },
+        improvement: { type: 'integer' },
+        consideration: { type: 'integer' },
+        resolved: { type: 'integer' },
+      },
+      required: ['critical', 'improvement', 'consideration', 'resolved'],
+    },
+  },
+  required: ['markdown', 'summary', 'stats'],
+};
+
+module.exports = { assessSchema, GENERATE_SCHEMA, PLAN_SCHEMA, WORKER_OUTPUT_SCHEMA, ISSUES_AUDIT_SCHEMA };

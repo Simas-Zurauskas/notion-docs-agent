@@ -84,9 +84,12 @@ const LINK_STANDARDS = `
 The markdown you produce is converted to Notion blocks. Notion rejects any link that is
 not a valid absolute URL (with protocol).
 
-- **Do NOT use markdown links for any internal references.** Just name the page or concept.
+- **Cross-page links (See Also, etc.):** Use Notion URLs built from the page ID.
+  The page IDs are shown in the documentation outline as \`[page-id]\`.
+  Format: \`[Page Title](https://www.notion.so/<page-id-without-dashes>)\`
+  - Example: if the page ID is \`338c2628-ef95-81a1-94ab-d85b9fd47bec\`, link as:
+    \`[Learning Experience & Progress](https://www.notion.so/338c2628ef9581a194abd85b9fd47bec)\`
 - **Do NOT use relative links** like \`[text](./path)\` or \`[text](#anchor)\`
-- **Only use markdown links for real absolute URLs** — e.g. \`[Docs](https://example.com)\`
 - **Never use inline code backticks** for file paths, function names, or technical identifiers.
   These don't belong in product documentation at all.
 `.trim();

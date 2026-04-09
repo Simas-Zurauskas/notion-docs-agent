@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
-name: 'Knowledge Base: Rebuild Product'
+name: "Knowledge Base: Rebuild Product"
 
 on:
   workflow_call:
@@ -13,7 +13,7 @@ jobs:
     timeout-minutes: 90
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      FORCE_COLOR: '1'
+      FORCE_COLOR: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -25,7 +25,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: "22"
 
       - name: Install dependencies
         working-directory: .ci-scripts/scripts
@@ -39,4 +39,6 @@ jobs:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_PRODUCT_ROOT_ID: ${{ secrets.NOTION_PRODUCT_ROOT_ID }}
           SKIP_PRODUCT_PAGE_IDS: ${{ secrets.SKIP_PRODUCT_PAGE_IDS }}
+          NOTION_PRODUCT_ISSUES_PAGE_ID: ${{ secrets.NOTION_PRODUCT_ISSUES_PAGE_ID }}
+          REPO_LABEL: ${{ github.event.repository.name }}
         run: node rebuild-docs-product.js
