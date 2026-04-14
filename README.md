@@ -13,9 +13,9 @@ Both use Claude Sonnet to assess the diff, decide which pages need updating, and
 
 ## Workflows
 
-| Workflow | Trigger | Purpose |
-|----------|---------|---------|
-| `notion-sync.yml` | Push to master | Runs both technical + product syncs sequentially |
+| Workflow             | Trigger         | Purpose                                                   |
+| -------------------- | --------------- | --------------------------------------------------------- |
+| `notion-sync.yml`    | Push to master  | Runs both technical + product syncs sequentially          |
 | `notion-rebuild.yml` | Manual dispatch | Full technical docs rebuild via multi-agent orchestration |
 
 ## Usage
@@ -50,13 +50,13 @@ jobs:
 
 ## Required Secrets (set in consumer repos)
 
-| Secret | Used by | Value |
-|--------|---------|-------|
-| `ANTHROPIC_API_KEY` | Both syncs + rebuild | Anthropic API key |
-| `NOTION_API_KEY` | Both syncs + rebuild | Notion integration token |
-| `NOTION_TECHNICAL_ROOT_ID` | Technical sync + rebuild | Technical page ID (`336c2628-ef95-81bf-8806-d8b738a2d8eb`) |
-| `NOTION_PRODUCT_ROOT_ID` | Product sync | How Strive Works page ID (`338c2628-ef95-81c1-afd6-de5c29af8bd1`) |
-| `SKIP_TECHNICAL_PAGE_IDS` | Technical sync + rebuild | Comma-separated page IDs to skip (pages owned by the other repo) |
+| Secret                     | Used by                  | Value                                                             |
+| -------------------------- | ------------------------ | ----------------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`        | Both syncs + rebuild     | Anthropic API key                                                 |
+| `NOTION_API_KEY`           | Both syncs + rebuild     | Notion integration token                                          |
+| `NOTION_TECHNICAL_ROOT_ID` | Technical sync + rebuild | Technical page ID (`336c2628-ef95-81bf-8806-d8b738a2d8eb`)        |
+| `NOTION_PRODUCT_ROOT_ID`   | Product sync             | How Strive Works page ID (`338c2628-ef95-81c1-afd6-de5c29af8bd1`) |
+| `SKIP_TECHNICAL_PAGE_IDS`  | Technical sync + rebuild | Comma-separated page IDs to skip (pages owned by the other repo)  |
 
 ## Scripts
 
@@ -64,22 +64,22 @@ All scripts live in `scripts/` and are checked out at runtime by the reusable wo
 
 ### Sync (incremental, per push)
 
-| Script | Purpose |
-|--------|---------|
-| `notion-sync-technical.js` | AI-driven technical doc sync — assesses diff, rewrites/creates Technical pages |
-| `notion-sync-product.js` | AI-driven product doc sync — assesses diff, rewrites/creates How Strive Works pages |
-| `doc-standards-technical.js` | Writing standards for technical docs (code references, file paths, schemas) |
-| `doc-standards-product.js` | Writing standards for product docs (no code references, accessible language) |
+| Script                       | Purpose                                                                             |
+| ---------------------------- | ----------------------------------------------------------------------------------- |
+| `notion-sync-technical.js`   | AI-driven technical doc sync — assesses diff, rewrites/creates Technical pages      |
+| `notion-sync-product.js`     | AI-driven product doc sync — assesses diff, rewrites/creates How Strive Works pages |
+| `doc-standards-technical.js` | Writing standards for technical docs (code references, file paths, schemas)         |
+| `doc-standards-product.js`   | Writing standards for product docs (no code references, accessible language)        |
 
 ### Rebuild (full, manual dispatch)
 
-| Script | Purpose |
-|--------|---------|
-| `rebuild-docs-technical.js` | Multi-agent full technical documentation rebuild |
-| `fetch-notion-docs.js` | Fetches existing Notion pages as markdown (used by rebuild) |
+| Script                      | Purpose                                                     |
+| --------------------------- | ----------------------------------------------------------- |
+| `rebuild-docs-technical.js` | Multi-agent full technical documentation rebuild            |
+| `fetch-notion-docs.js`      | Fetches existing Notion pages as markdown (used by rebuild) |
 
 ### Shared
 
-| Script | Purpose |
-|--------|---------|
+| Script           | Purpose                                                          |
+| ---------------- | ---------------------------------------------------------------- |
 | `notion-tool.js` | CLI for Notion CRUD operations (rewrite, create, delete, rename) |

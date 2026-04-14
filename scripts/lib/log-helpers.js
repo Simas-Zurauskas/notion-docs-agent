@@ -32,10 +32,10 @@ const statusLine = (icon, text, detail) =>
   `${indent.L2}${icon} ${text}${detail ? chalk.dim(` ${detail}`) : ''}`;
 
 /** Compact agent activity line. */
-const agentLine = (agentLabel, { model, turns, elapsed, tools } = {}) => {
+const agentLine = (agentLabel, { model, elapsed, tools } = {}) => {
   const parts = [];
   if (model) parts.push(model);
-  if (turns != null) parts.push(`${turns} turn${turns !== 1 ? 's' : ''}`);
+
   if (elapsed != null) parts.push(`${Math.round(elapsed / 1000)}s`);
   if (tools?.length) parts.push(`tools: ${tools.join(', ')}`);
   return `${indent.L2}◆ ${agentLabel} ${chalk.dim(`[${parts.join(', ')}]`)}`;

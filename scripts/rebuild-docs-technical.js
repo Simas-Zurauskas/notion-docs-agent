@@ -20,7 +20,7 @@ const { indent, label, separator, phaseHeader, summaryHeader, phaseTiming } = re
 const { invokeAgent } = require('./lib/agent');
 const { loadDocsIndex, buildDocsOutline } = require('./lib/docs');
 const { PLAN_SCHEMA, WORKER_OUTPUT_SCHEMA } = require('./lib/schemas');
-const { runIssuesAudit } = require('./lib/issues-audit');
+
 
 const SCRIPTS_DIR = __dirname;
 const REPO_ROOT = process.env.REPO_ROOT || path.resolve(SCRIPTS_DIR, '../..');
@@ -524,22 +524,6 @@ async function main() {
   }
 
   console.log(phaseTiming('Phase C', Date.now() - phaseCStart));
-
-  // Phase D: Issues Audit
-  await runIssuesAudit({
-    docType: 'technical',
-    docsIndex,
-    docsOutline,
-    baseDir: REPO_ROOT,
-    notionToolPath: NOTION_TOOL,
-    repoLabel: process.env.REPO_LABEL,
-    phaseLabel: 'Phase D',
-    runContext: {
-      trigger: 'rebuild',
-      summary: `${allWriteResults.filter((r) => r.status === 'success').length} pages written, ${allWriteResults.filter((r) => r.status === 'error').length} failed`,
-      writeLog: allWriteResults,
-    },
-  });
 
   const elapsed = Math.round((Date.now() - startTime) / 1000);
   printSummary(plan, allWriteResults, elapsed);

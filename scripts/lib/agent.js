@@ -12,10 +12,9 @@ const DEFAULT_MODEL = 'claude-sonnet-4-6';
  */
 async function invokeAgent({ prompt, schema, model = DEFAULT_MODEL, maxTurns = 10, tools = [], cwd, label: agentLabel }) {
   const start = Date.now();
-  let turnCount = 0;
 
   if (agentLabel) {
-    console.log(`${indent.L2}◆ ${agentLabel} ${chalk.dim(`[${model}, max ${maxTurns} turns]`)}`);
+    console.log(`${indent.L2}◆ ${agentLabel} ${chalk.dim(`[${model}]`)}`);
   }
 
   const conversation = query({
@@ -33,17 +32,14 @@ async function invokeAgent({ prompt, schema, model = DEFAULT_MODEL, maxTurns = 1
 
   let result = null;
   for await (const event of conversation) {
-    if (event.type === 'assistant') {
-      turnCount++;
-    }
-    if (event.type === 'result' && event.subtype === 'success') {
+if (event.type === 'result' && event.subtype === 'success') {
       result = event.structured_output || JSON.parse(event.result);
     }
   }
 
   if (agentLabel) {
     const elapsed = Math.round((Date.now() - start) / 1000);
-    const parts = [`${turnCount} turn${turnCount !== 1 ? 's' : ''}`, `${elapsed}s`];
+    const parts = [`${elapsed}s`];
     console.log(`${indent.L3}${chalk.dim(parts.join(' · '))}`);
   }
 
