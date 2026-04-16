@@ -24,7 +24,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          repository: Simas-Zurauskas/strive2-ci
+          repository: Simas-Zurauskas/notion-docs-agent
           path: .ci-scripts
 
       - name: Setup Node

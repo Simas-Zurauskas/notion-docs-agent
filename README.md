@@ -1,6 +1,6 @@
-# strive2-ci
+# notion-docs-agent
 
-Shared CI workflows and scripts for the Strive2 platform. Used by [api](https://github.com/Simas-Zurauskas/strive2-api) and [client](https://github.com/Simas-Zurauskas/strive2-client) repos via GitHub reusable workflows.
+Reusable GitHub workflows and scripts that keep a Notion knowledge base in sync with one or more source repositories. Consumer repos call these workflows to run AI-driven incremental doc updates (on push) or full doc rebuilds (on demand).
 
 ## What It Does
 
@@ -15,12 +15,12 @@ Full rebuilds can be triggered manually for both sections.
 
 ## Workflows
 
-| Workflow                       | Trigger         | Purpose                                             |
-| ------------------------------ | --------------- | --------------------------------------------------- |
-| `notion-sync-technical.yml`    | Push to master  | Incremental technical doc sync (assess diff → write) |
-| `notion-sync-product.yml`      | Push to master  | Incremental product doc sync (assess diff → write)   |
-| `notion-rebuild-technical.yml` | Manual dispatch | Full technical docs rebuild via multi-agent orchestration |
-| `notion-rebuild-product.yml`   | Manual dispatch | Full product docs rebuild via multi-agent orchestration  |
+| Workflow                 | Trigger         | Purpose                                                   |
+| ------------------------ | --------------- | --------------------------------------------------------- |
+| `sync-technical.yml`     | Push to master  | Incremental technical doc sync (assess diff → write)      |
+| `sync-product.yml`       | Push to master  | Incremental product doc sync (assess diff → write)        |
+| `rebuild-technical.yml`  | Manual dispatch | Full technical docs rebuild via multi-agent orchestration |
+| `rebuild-product.yml`    | Manual dispatch | Full product docs rebuild via multi-agent orchestration   |
 
 ## Usage
 
@@ -36,12 +36,12 @@ on:
 
 jobs:
   sync-technical:
-    uses: Simas-Zurauskas/strive2-ci/.github/workflows/notion-sync-technical.yml@master
+    uses: Simas-Zurauskas/notion-docs-agent/.github/workflows/sync-technical.yml@master
     with:
       notion_root_id: 336c2628-ef95-81bf-8806-d8b738a2d8eb
     secrets: inherit
   sync-product:
-    uses: Simas-Zurauskas/strive2-ci/.github/workflows/notion-sync-product.yml@master
+    uses: Simas-Zurauskas/notion-docs-agent/.github/workflows/sync-product.yml@master
     with:
       notion_root_id: 338c2628-ef95-81c1-afd6-de5c29af8bd1
     secrets: inherit
@@ -55,12 +55,12 @@ on:
 
 jobs:
   rebuild-technical:
-    uses: Simas-Zurauskas/strive2-ci/.github/workflows/notion-rebuild-technical.yml@master
+    uses: Simas-Zurauskas/notion-docs-agent/.github/workflows/rebuild-technical.yml@master
     with:
       notion_root_id: 336c2628-ef95-81bf-8806-d8b738a2d8eb
     secrets: inherit
   rebuild-product:
-    uses: Simas-Zurauskas/strive2-ci/.github/workflows/notion-rebuild-product.yml@master
+    uses: Simas-Zurauskas/notion-docs-agent/.github/workflows/rebuild-product.yml@master
     with:
       notion_root_id: 338c2628-ef95-81c1-afd6-de5c29af8bd1
     secrets: inherit
