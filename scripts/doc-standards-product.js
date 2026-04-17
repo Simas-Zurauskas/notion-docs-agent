@@ -69,7 +69,22 @@ from naming conventions, not carried over from a scan summary.
 - **Verify UI claims against the component.** When writing "the dashboard shows a
   90-day activity heatmap," read the component and check the actual date range.
 - **Enumerate, do not estimate.** When stating counts (question count, achievement
-  count, content block types), count the items in the source.
+  count, content block types), count the items in the source. **Never restate a
+  count that first appeared on another page** — if the same count appears on
+  sibling pages, every page must recount independently from source and all
+  occurrences must agree. A count drifting between pages is a documentation bug.
+  Do not trust the planner's instructions or existing page text for counts.
+- **The paste-the-line test.** Before writing a behavioral claim, locate the
+  specific evidence in the materials you can access — source files (when running
+  under rebuild with Read/Glob/Grep) or the diff plus the current page content
+  (when running under incremental sync). If you cannot find the evidence, the
+  claim is speculative — remove it, reframe it as a question, or mark it
+  \`_(unverified)_\` inline. Past runs have shipped fabricated mechanisms
+  (auto-summarization that doesn't exist; mastered items exiting review when
+  they don't) because a writer inferred from naming instead of reading the code.
+- **Trust source over orientation.** Planner instructions, existing page text,
+  and summaries are orientation — not truth. Every behavioral claim must be
+  re-verified against the code (or the diff, in sync context).
 `.trim();
 
 const QUALITY_CRITERIA = `

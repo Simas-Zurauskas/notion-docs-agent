@@ -174,6 +174,27 @@ ${DOC_STANDARDS.PAGE_STRUCTURE}
 
 ${DOC_STANDARDS.LINK_STANDARDS}
 
+## Sync scope discipline
+
+You are running under INCREMENTAL SYNC. You have access to: the planner
+instructions, the diff that triggered this update, and the current page
+content. You do NOT have access to the full codebase — you cannot open source
+files, run Glob, or run Grep.
+
+This is a hard constraint with a specific failure mode: without code access,
+rewriting unchanged sections is a hallucination risk, not a quality improvement.
+
+- Rewrite ONLY the sections the diff or planner instructions actually require
+  changing. A full-page rewrite that alters claims outside the diff's scope is
+  a bug, not a feature.
+- For sections unchanged by this diff, preserve the existing page text
+  verbatim unless the diff directly contradicts it.
+- If a claim in the current page looks suspicious but the diff doesn't address
+  it, do NOT silently rewrite it. Either leave it untouched or mark it
+  \`_(unverified)_\` inline so a future rebuild can revisit it.
+- Do not invent file:line anchors you cannot confirm — if the diff doesn't
+  show the line, don't cite it. Prefer preserving the existing citation.
+
 ## Output
 
 Write the COMPLETE page content as markdown. This will fully replace the existing page,

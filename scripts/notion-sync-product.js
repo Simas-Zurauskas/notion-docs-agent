@@ -8,6 +8,7 @@ const { invokeAgent } = require('./lib/agent');
 const { loadDocsIndex, buildDocsOutline, loadPageContent } = require('./lib/docs');
 const { assessSchema, GENERATE_SCHEMA } = require('./lib/schemas');
 const { writeResults } = require('./lib/notion-writer');
+const { lintProductResults, printProductLintReport } = require('./lib/product-lint');
 
 
 const SCRIPTS_DIR = __dirname;
@@ -185,6 +186,27 @@ ${DOC_STANDARDS.PAGE_STRUCTURE}
 
 ${DOC_STANDARDS.LINK_STANDARDS}
 
+## Sync scope discipline
+
+You are running under INCREMENTAL SYNC. You have access to: the planner
+instructions, the diff that triggered this update, and the current page
+content. You do NOT have access to the full codebase — you cannot open source
+files, run Glob, or run Grep.
+
+This is a hard constraint with a specific failure mode: without code access,
+rewriting unchanged sections is a hallucination risk, not a quality improvement.
+
+- Rewrite ONLY the sections the diff or planner instructions actually require
+  changing. A full-page rewrite that alters claims outside the diff's scope is
+  a bug, not a feature.
+- For sections unchanged by this diff, preserve the existing page text
+  verbatim unless the diff directly contradicts it.
+- If a behavioral claim in the current page looks suspicious but the diff
+  doesn't address it, do NOT silently rewrite it. Either leave it untouched or
+  mark it \`_(unverified)_\` inline so a future rebuild can revisit it.
+- Do not invent thresholds, counts, or flow steps you cannot confirm from the
+  diff. If the diff doesn't prove a number, don't change the number.
+
 ## Output
 
 Write the COMPLETE page content as markdown. This will fully replace the existing page,
@@ -314,6 +336,16 @@ async function main() {
 
   // Phase 2: Generate
   const contentResults = await generate(validActions, docsIndex, diff);
+
+  // Product code-reference lint — warn-only, runs between generate and write.
+  console.log(chalk.magenta(`\n${indent.L1}--- Product code-reference lint ---`));
+  // contentResults is aligned by index with the actions that survived validation
+  // but actions include the page_title; enrich results so the lint report uses it.
+  const enrichedForLint = contentResults.map((r, i) => ({
+    ...r,
+    page_title: r.page_title || validActions[i]?.page_title,
+  }));
+  printProductLintReport(lintProductResults(enrichedForLint), { theme: THEME });
 
   // Phase 3: Write to Notion
   const phase3Start = Date.now();

@@ -19,8 +19,11 @@ const chalk = require('chalk');
 const DOC_STANDARDS = require('./doc-standards-product');
 const { indent, label, separator, phaseHeader, summaryHeader, phaseTiming } = require('./lib/log-helpers');
 const { invokeAgent } = require('./lib/agent');
-const { loadDocsIndex, buildDocsOutline } = require('./lib/docs');
+const { loadDocsIndex, buildDocsOutline, loadChildrenContext } = require('./lib/docs');
 const { PLAN_SCHEMA, WORKER_OUTPUT_SCHEMA } = require('./lib/schemas');
+const { checkNumericConsistency, printNumericConsistencyReport } = require('./lib/gates');
+const { lintProductResults, printProductLintReport } = require('./lib/product-lint');
+const { verifyResults, applyVerdicts, printVerifyReport, writeVerifyArtifact } = require('./lib/verify');
 
 
 const SCRIPTS_DIR = __dirname;
@@ -136,6 +139,16 @@ the code but must describe everything in plain language.
 - For 'rewrite': include page_id and current_doc_file from the docs index
 - For 'create': MUST include parent_id and title. Use the page ID of the parent page
   from the docs index — NOT the product root ID. Sub-pages go under their parent.
+- **Hierarchical bootstrap** (creating a parent AND its child in the same run —
+  common when the knowledge base is empty or missing an entire subtree): if the
+  child's parent is being created by another task in THIS plan, set the child's
+  parent_id to the parent task's 'id' (its slug) rather than a Notion UUID, and
+  add the parent task's id to the child's 'depends_on' array. The pipeline
+  swaps the task-id for the real Notion UUID after the parent is created. This
+  is the ONLY case where parent_id can be a task slug; every other parent_id
+  must be a real Notion UUID from the docs index or the product root ID.
+  Plan deep trees in layers — top-level tasks first, then children, then
+  grandchildren — with each layer's depends_on pointing at its parent task.
 - For 'delete': include page_id — only for pages documenting removed features
 - For 'split': create separate child tasks (action: 'create') and one parent task
   (action: 'rewrite') that depends_on the children
@@ -147,6 +160,73 @@ After drafting your task list, verify that every major user-facing feature has
 corresponding documentation. Cross-reference the codebase manifest against the existing
 docs outline. If a significant feature area (authentication, course creation, lessons,
 quizzes, gamification, dashboard, etc.) has no page or section, plan a task for it.
+
+## Cross-page consistency
+
+Workers run in parallel and cannot coordinate. Numeric drift — the same count
+or threshold appearing with different values on sibling pages — happens when
+one page is rewritten and another page citing the same fact is not. When
+planning:
+
+- If the code change affects a count, threshold, or constant that is likely
+  cited on multiple pages (achievement counts, level thresholds, XP values,
+  review intervals, question counts, block-type lists, tier boundaries), task
+  EVERY page that could plausibly mention that fact for rewrite — not just the
+  "owner" page.
+- When the same fact is taught in an OVERVIEW and a detail page, both must say
+  the same thing. Past runs have shipped OVERVIEWs contradicting their own
+  detail pages (e.g. "mastered items exit the review queue" in the overview
+  while the detail page correctly said they stay). Plan both together.
+- Tell each worker to re-verify the fact from source independently. Do not
+  state "the count is N" in the instructions — that propagates a stale number
+  through the instructions themselves.
+
+## Page sizing (feature-scope to depth)
+
+Choose the right granularity per page. Apply recursively — if a page's children
+each cover multiple distinct flows, they split further.
+
+| Feature surface                                            | Shape                                                      |
+| ---------------------------------------------------------- | ---------------------------------------------------------- |
+| A UI toggle, single control, or <150 words of behavior     | Fold into a parent page                                    |
+| One screen with one primary flow                           | One standalone page                                        |
+| A feature area with 2–5 related screens or flows           | Parent page + 2–5 children                                 |
+| A feature area with 6+ flows or distinct sub-areas         | Parent page + children; children may themselves be parents |
+
+A feature deserves its own page when it has: its own screen/UI surface, multiple
+states or user decision points, business rules (scoring, scheduling, gating),
+or enough depth that a reader would navigate to "how does X work?"
+
+A feature is a subsection, not a page, when: it's a UI control within a larger
+screen, it only makes sense in its parent's context, or describing it takes
+under 150 words with no business rules.
+
+Anti-patterns to avoid:
+- **Catch-all pages** — never group unrelated features ("notes, bookmarks, font
+  scaling") on one page just because each is small, unless they share a common
+  purpose (e.g. "Personal Learning Tools").
+- **Padded sub-pages** — never fragment a simple feature into sub-pages just
+  to match a sibling's depth.
+
+## Plan self-critique
+
+Before returning your plan, critique it along five axes and revise if any fail:
+
+1. **Coverage** — is every significant user-facing feature documented? If a
+   feature area has no page and no rewrite/create task, you missed it.
+2. **Over-factoring** — are any planned pages too thin (<150 words of real
+   content) or covering a UI toggle that belongs in a parent? They should merge.
+3. **Under-factoring** — does any page's scope cover 6+ distinct flows or
+   sub-areas per the table above? It should split.
+4. **Drift** — does any count, threshold, or user-facing rule you reference
+   appear on multiple pages? If yes, have you tasked every affected page (per
+   Cross-page consistency)?
+5. **OVERVIEW/detail alignment** — if you're rewriting both an overview and
+   one of its detail pages, do the instructions describe the SAME behavior? A
+   parent summary that says one thing and a child page that says another is a
+   reported bug waiting to happen.
+
+Revise the task list to resolve each critique, then return.
 
 ## Instructions field
 
@@ -238,12 +318,40 @@ async function orchestrate(manifest, docsOutline, docsIndex) {
 // Phase C: Execute (workers + Notion writes)
 // ---------------------------------------------------------------------------
 
-function buildWorkerPrompt(task, manifest) {
+function buildWorkerPrompt(task, manifest, docsIndex = []) {
   let currentDoc = '';
   if (task.current_doc_file) {
     const docPath = path.join(REPO_ROOT, task.current_doc_file);
     if (fs.existsSync(docPath)) {
       currentDoc = fs.readFileSync(docPath, 'utf8');
+    }
+  }
+
+  // Hub-page alignment: if this task rewrites a page that has children in
+  // Notion, include the children's current content so the worker can align
+  // the hub with what the children actually say. Critical for product
+  // OVERVIEWs — past runs shipped OVERVIEWs that contradicted their own
+  // detail pages.
+  let childrenBlock = '';
+  if (task.action === 'rewrite' && task.page_id) {
+    const ctx = loadChildrenContext(task.page_id, docsIndex, REPO_ROOT);
+    if (ctx.count > 0) {
+      childrenBlock = `\n## Hub-page alignment
+
+This page is a parent to ${ctx.count} other page(s). Below is what those
+children currently say. When your rewrite summarizes or references the
+children, the summary MUST match what the children actually describe — not
+what the planner's instructions imply. Past runs have shipped OVERVIEWs
+contradicting their own detail pages (e.g. "mastered items exit the review
+queue" in the OVERVIEW while the detail page correctly said they stay).
+
+If a child claim looks wrong, add a one-line note in your summary; do not
+attempt to rewrite the children from this worker. Remember: NO code
+references — describe everything in plain language, even when summarizing
+technical detail from the children.
+
+${ctx.text}
+`;
     }
   }
 
@@ -287,7 +395,7 @@ ${DOC_STANDARDS.QUALITY_CRITERIA}
 ${DOC_STANDARDS.PAGE_STRUCTURE}
 
 ${DOC_STANDARDS.LINK_STANDARDS}
-
+${childrenBlock}
 ## CRITICAL: No Code References
 
 Your output must contain ZERO code references:
@@ -310,8 +418,8 @@ ${task.parent_id ? `- parent_id: "${task.parent_id}"` : ''}
 ${task.title ? `- title: "${task.title}"` : ''}`;
 }
 
-async function runWorkerAgent(task, manifest) {
-  const prompt = buildWorkerPrompt(task, manifest);
+async function runWorkerAgent(task, manifest, docsIndex = []) {
+  const prompt = buildWorkerPrompt(task, manifest, docsIndex);
 
   try {
     const result = await invokeAgent({
@@ -344,13 +452,13 @@ async function runWorkerAgent(task, manifest) {
   }
 }
 
-async function runTaskBatch(tasks, manifest) {
+async function runTaskBatch(tasks, manifest, docsIndex = []) {
   const results = [];
   for (let i = 0; i < tasks.length; i += CONCURRENCY) {
     const batch = tasks.slice(i, i + CONCURRENCY);
     console.log(chalk.cyan(`\n${indent.L1}Batch ${Math.floor(i / CONCURRENCY) + 1}: workers ${i + 1}–${i + batch.length} of ${tasks.length}`));
     const batchStart = Date.now();
-    const batchResults = await Promise.all(batch.map((t) => runWorkerAgent(t, manifest)));
+    const batchResults = await Promise.all(batch.map((t) => runWorkerAgent(t, manifest, docsIndex)));
     const batchElapsed = Math.round((Date.now() - batchStart) / 1000);
     for (const r of batchResults) {
       const icon = r.skipped ? chalk.yellow('○') : chalk.green('✓');
@@ -388,6 +496,16 @@ function resolveDependencies(dependentTasks, writeLog) {
   }
 
   return dependentTasks.map((task) => {
+    // If parent_id references a task that was created in this run (i.e. the
+    // planner used the parent task's `id` as a placeholder because the real
+    // Notion UUID did not exist at plan time), swap in the real UUID.
+    // Existing UUIDs pass through unchanged — they won't match any key in
+    // createdIds, which is keyed by task-id slug. This enables hierarchical
+    // bootstrap without affecting remap runs.
+    if (task.parent_id && createdIds[task.parent_id]) {
+      task.parent_id = createdIds[task.parent_id];
+    }
+
     const resolvedIds = (task.depends_on || [])
       .map((depId) => (createdIds[depId] ? `"${depId}" → page ID: ${createdIds[depId]}` : null))
       .filter(Boolean);
@@ -543,22 +661,86 @@ async function main() {
 
   // Run independent workers
   console.log(chalk.cyan(`\n${indent.L1}--- Independent workers ---`));
-  const independentResults = await runTaskBatch(independent, manifest);
+  const independentResults = await runTaskBatch(independent, manifest, docsIndex);
+
+  // Verifier pass (opt-in) — catches fabricated claims, code-ref leakage, and
+  // behavioral drift in product pages before Notion writes. Strict mode blocks
+  // critical-issue pages.
+  const verifyEnabled = process.env.VERIFY === 'true';
+  const verifyStrict = process.env.VERIFY_STRICT === 'true';
+  if (verifyEnabled && independentResults.length > 0) {
+    console.log(chalk.magenta(`\n${indent.L1}--- Verifier (independent batch, ${verifyStrict ? 'STRICT' : 'warn-only'}) ---`));
+    const verifyReports = await verifyResults(independentResults, { mode: 'product', manifest, cwd: REPO_ROOT });
+    applyVerdicts(independentResults, verifyReports, { strict: verifyStrict });
+    printVerifyReport(verifyReports, { theme: THEME, strict: verifyStrict });
+    if (process.env.VERIFY_REPORT_PATH) {
+      try { writeVerifyArtifact(verifyReports, process.env.VERIFY_REPORT_PATH); } catch (e) { /* non-fatal */ }
+    }
+  }
 
   // Write independent results to Notion
   console.log(chalk.cyan(`\n${indent.L1}--- Writing independent results to Notion ---`));
   const writeLog = writeToNotion(independentResults);
 
-  // Run dependent workers (if any)
+  // Numeric consistency gate — warn on count drift across sibling pages.
+  console.log(chalk.cyan(`\n${indent.L1}--- Numeric consistency (independent batch) ---`));
+  printNumericConsistencyReport(checkNumericConsistency(independentResults), { theme: THEME });
+
+  // Product code-reference linter — catch code-refs that slipped past the prompt.
+  console.log(chalk.cyan(`\n${indent.L1}--- Product code-reference lint (independent batch) ---`));
+  printProductLintReport(lintProductResults(independentResults), { theme: THEME });
+
+  // Run dependent workers in waves. See technical rebuild for the full
+  // rationale — the iterative loop subsumes the previous single-batch
+  // behavior when every task resolves in the first pass (remap scenario),
+  // and unlocks hierarchical bootstrap at no cost to remap runs.
   let allWriteResults = [...writeLog];
   if (dependent.length > 0) {
-    console.log(chalk.cyan(`\n${indent.L1}--- Dependent workers ---`));
-    const resolved = resolveDependencies(dependent, writeLog);
-    const dependentResults = await runTaskBatch(resolved, manifest);
+    const createdIds = {};
+    for (const e of allWriteResults) if (e.created_id) createdIds[e.task_id] = e.created_id;
 
-    console.log(chalk.cyan(`\n${indent.L1}--- Writing dependent results to Notion ---`));
-    const depWriteLog = writeToNotion(dependentResults);
-    allWriteResults.push(...depWriteLog);
+    const taskIdsInBatch = new Set(dependent.map((t) => t.id));
+    let remaining = [...dependent];
+    const allDependentResults = [];
+    let waveNum = 0;
+
+    while (remaining.length > 0) {
+      waveNum += 1;
+      const ready = remaining.filter((t) =>
+        (t.depends_on || []).every((d) => createdIds[d] || !taskIdsInBatch.has(d))
+      );
+      if (!ready.length) {
+        console.warn(chalk.yellow(`${indent.L1}⚠ Unresolvable dependencies for ${remaining.length} task(s): ${remaining.map((t) => t.id).join(', ')} — check each task's depends_on list.`));
+        break;
+      }
+      remaining = remaining.filter((t) => !ready.includes(t));
+
+      console.log(chalk.magenta(`\n${indent.L1}--- Dependent workers (wave ${waveNum}, ${ready.length} task(s)) ---`));
+      const resolved = resolveDependencies(ready, allWriteResults);
+      const waveResults = await runTaskBatch(resolved, manifest, docsIndex);
+
+      if (verifyEnabled && waveResults.length > 0) {
+        console.log(chalk.magenta(`\n${indent.L1}--- Verifier (dependent wave ${waveNum}, ${verifyStrict ? 'STRICT' : 'warn-only'}) ---`));
+        const waveReports = await verifyResults(waveResults, { mode: 'product', manifest, cwd: REPO_ROOT });
+        applyVerdicts(waveResults, waveReports, { strict: verifyStrict });
+        printVerifyReport(waveReports, { theme: THEME, strict: verifyStrict });
+      }
+
+      console.log(chalk.cyan(`\n${indent.L1}--- Writing dependent results (wave ${waveNum}) to Notion ---`));
+      const waveWriteLog = writeToNotion(waveResults);
+      allDependentResults.push(...waveResults);
+      allWriteResults.push(...waveWriteLog);
+      for (const e of waveWriteLog) if (e.created_id) createdIds[e.task_id] = e.created_id;
+    }
+
+    // Cross-batch consistency — catches OVERVIEW/detail count drift across
+    // any combination of independent + dependent waves.
+    console.log(chalk.cyan(`\n${indent.L1}--- Numeric consistency (cross-batch) ---`));
+    printNumericConsistencyReport(checkNumericConsistency([...independentResults, ...allDependentResults]), { theme: THEME });
+
+    // Cross-batch product lint — catches leakage in dependent (often OVERVIEW) pages.
+    console.log(chalk.cyan(`\n${indent.L1}--- Product code-reference lint (cross-batch) ---`));
+    printProductLintReport(lintProductResults([...independentResults, ...allDependentResults]), { theme: THEME });
   }
 
   console.log(phaseTiming('Phase C', Date.now() - phaseCStart));

@@ -47,9 +47,24 @@ const VERIFICATION_RULES = `
 Documentation errors most often come from writing what you expect the code to do
 rather than what it actually does. These rules make verification a process step.
 
-- **Counts must be enumerated.** When stating a number (endpoint count, hook count,
-  model field count), enumerate the items in the source file and count them. Do not
-  estimate from memory or round.
+- **Counts must be cited, not restated.** When stating a number (endpoint count,
+  hook count, model field count), enumerate the items in the source and count
+  them yourself. Every numeric claim must either (a) carry an inline file:line
+  anchor where the enumeration lives
+  (\`"32 course routes (src/routes/courseRoutes.ts:44–92)"\`) or (b) be a
+  restatement of a count you already enumerated earlier on the same page.
+  **Never restate a count that first appeared on another page** — link to that
+  page instead. When the same count appears on sibling pages, each page must
+  recount from source and all occurrences must agree. A count drifting between
+  pages is a documentation bug.
+- **The paste-the-line test.** Before writing a behavioral claim that isn't
+  trivially visible from one file's name or signature, locate the specific
+  evidence in the materials you can access — source files (when running under
+  rebuild with Read/Glob/Grep) or the diff plus the current page content (when
+  running under incremental sync). If you cannot locate the evidence, the claim
+  is speculative — remove it, reframe it as a question, or mark it
+  \`_(unverified)_\` inline. Speculation written in confident prose is the
+  costliest kind of error.
 - **Flows must be traced.** When describing a multi-step process (auth flow, job
   lifecycle, generation pipeline), trace each step through the actual code path —
   function by function, file by file. Do not describe what you assume happens.
@@ -60,6 +75,10 @@ rather than what it actually does. These rules make verification a process step.
   model fields, enum values), read the file and include every item. If a table is
   intentionally selective, say "Key hooks include…" rather than presenting it as
   the full list.
+- **Trust source over orientation.** Planner instructions, existing page text,
+  and summaries are orientation — not truth. Every factual claim must be
+  re-verified against the code (or the diff, in sync context). Do not propagate
+  a claim you haven't personally confirmed.
 `.trim();
 
 const QUALITY_CRITERIA = `
