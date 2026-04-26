@@ -3,6 +3,7 @@
  *
  * Usage:
  *   node notion-tool.js list
+ *   node notion-tool.js read <page_id>            # writes markdown to stdout
  *   node notion-tool.js rewrite <page_id> <markdown_file>
  *   node notion-tool.js append <page_id> <markdown_file>
  *   node notion-tool.js create <parent_id> "<title>" <markdown_file>
@@ -10,15 +11,17 @@
  *   node notion-tool.js rename <page_id> "<new_title>"
  *
  * Markdown files are converted to Notion blocks automatically.
- * Requires NOTION_API_KEY and NOTION_ROOT_ID env vars.
+ * Requires NOTION_API_KEY (and NOTION_ROOT_ID for `list`).
  */
 
 const fs = require('fs');
 const { Client } = require('@notionhq/client');
 const { markdownToBlocks } = require('@tryfabric/martian');
+const { NotionToMarkdown } = require('notion-to-md');
 const chalk = require('chalk');
 
 const notion = new Client({ auth: process.env.NOTION_API_KEY });
+const n2m = new NotionToMarkdown({ notionClient: notion });
 
 // ---------------------------------------------------------------------------
 // Markdown sanitization — strip links that Notion will reject
@@ -99,6 +102,16 @@ async function appendBlocks(pageId, blocks) {
       children: blocks.slice(i, i + 100),
     });
   }
+}
+
+async function readPage(pageId) {
+  const blocks = await n2m.pageToMarkdown(pageId);
+  const result = n2m.toMarkdownString(blocks);
+  // Strip the auto-generated drift-prevention banner that wiki-to-notion.js
+  // injects on push, so verification/regen isn't fed back its own banner.
+  let md = result.parent || '';
+  md = md.replace(/^>\s*[^\n]*Auto-generated from `wiki\/`[^\n]*\n+/m, '');
+  process.stdout.write(md);
 }
 
 async function rewritePage(pageId, markdownFile) {
@@ -195,6 +208,11 @@ async function main() {
       await listPages();
       break;
 
+    case 'read':
+      if (args.length < 1) throw new Error('Usage: read <page_id>');
+      await readPage(args[0]);
+      break;
+
     case 'rewrite':
       if (args.length < 2) throw new Error('Usage: rewrite <page_id> <markdown_file>');
       await rewritePage(args[0], args[1]);
@@ -222,7 +240,7 @@ async function main() {
 
     default:
       console.error(chalk.red(`${'✗'} Unknown command: ${command}`));
-      console.error(chalk.dim('Commands: list, rewrite, append, create, delete, rename'));
+      console.error(chalk.dim('Commands: list, read, rewrite, append, create, delete, rename'));
       process.exit(1);
   }
 }

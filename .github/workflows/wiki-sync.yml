@@ -1,0 +1,81 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: "Wiki Sync"
+
+# Multi-repo CI sync: docs live in Notion, code lives in git, this workflow
+# bridges them. On every push, the consumer's diff is intersected against
+# the plan in .notion-docs/, affected pages are fetched from Notion, verified
+# against scope_files, regenerated on drift, and pushed back to Notion.
+#
+# See ci/README.md for the architectural overview.
+
+on:
+  workflow_call:
+    inputs:
+      consumer_repo_name:
+        description: "Prefix used in the plan's scope_files (e.g. 'api'). Defaults to the calling repo's name."
+        required: false
+        type: string
+        default: ${{ github.event.repository.name }}
+      regen_disabled:
+        description: "Kill switch — skip verify+regen entirely."
+        required: false
+        type: boolean
+        default: false
+
+# Prevent same-consumer races: a second push waits for the first run to finish.
+concurrency:
+  group: wiki-sync-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_COLOR: "1"
+
+    steps:
+      # The consumer repo — provides the diff and the source code.
+      - name: Checkout consumer repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The notion-docs-agent repo (this repo) — provides scripts and prompts.
+      - name: Checkout notion-docs-agent
+        uses: actions/checkout@v4
+        with:
+          repository: Simas-Zurauskas/notion-docs-agent
+          path: .ci-scripts
+          ref: master
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        working-directory: .ci-scripts/scripts
+        run: npm ci || npm install
+
+      - name: Run wiki sync
+        working-directory: .ci-scripts/scripts
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          CONSUMER_REPO_ROOT: ${{ github.workspace }}
+          CONSUMER_REPO_NAME: ${{ inputs.consumer_repo_name }}
+          WIKI_PROMPTS_DIR: ${{ github.workspace }}/.ci-scripts/prompts
+          WIKI_REGEN_DISABLED: ${{ inputs.regen_disabled }}
+          BASE_SHA: ${{ github.event.before || 'HEAD~1' }}
+          HEAD_SHA: ${{ github.sha }}
+          WIKI_TELEMETRY_DIR: /tmp/wiki-sync
+        run: node wiki-sync.js
+
+      - name: Upload run telemetry
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wiki-sync-telemetry-${{ github.run_id }}
+          path: /tmp/wiki-sync/
+          if-no-files-found: ignore
+          retention-days: 30
